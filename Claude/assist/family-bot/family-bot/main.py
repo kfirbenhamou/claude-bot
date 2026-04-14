@@ -30,6 +30,7 @@ from handlers.incoming import (
     handle_event_edit_callback,
     handle_event_remove_callback,
     handle_event_reminder_callback,
+    handle_event_tts_callback,
     handle_confirm_remove_callback,
     handle_add_reminder_timing_callback,
     handle_finish_reminders_callback,
@@ -95,6 +96,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_cancel_remove_callback, pattern="^cancel_remove$"))
     app.add_handler(CallbackQueryHandler(handle_confirm_remove_callback, pattern="^confirm_remove:"))
     app.add_handler(CallbackQueryHandler(handle_event_reminder_callback, pattern="^evt_reminder:"))
+    app.add_handler(CallbackQueryHandler(handle_event_tts_callback, pattern="^evt_tts:"))
     app.add_handler(CallbackQueryHandler(handle_add_reminder_timing_callback, pattern="^add_reminder:"))
     app.add_handler(CallbackQueryHandler(handle_finish_reminders_callback, pattern="^finish_reminders:"))
     

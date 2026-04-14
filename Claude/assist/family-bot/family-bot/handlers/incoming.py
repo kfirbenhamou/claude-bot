@@ -4,7 +4,7 @@ Handles all incoming Telegram messages.
 """
 
 import os
-from datetime import datetime, date
+from datetime import datetime, date, time, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler
@@ -65,7 +65,8 @@ async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             [InlineKeyboardButton(f"הצג {persona['name']}", callback_data=f"show_{persona['name']}")]
         )
     keyboard.append(
-        [InlineKeyboardButton("הצג היום", callback_data="show_היום")]
+        [InlineKeyboardButton("הצג היום", callback_data="show_היום"),
+         InlineKeyboardButton("הצג מחר", callback_data="show_מחר")]
     )
     keyboard.append(
         [InlineKeyboardButton("הצג הכל", callback_data="show_all")]
@@ -97,6 +98,8 @@ async def handle_show_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     
     if command == "show_היום":
         await _show_today_callback(query)
+    elif command == "show_מחר":
+        await _show_tomorrow_callback(query)
     elif command == "show_all":
         await _show_all_callback(query)
     elif command == "add_event":
@@ -130,16 +133,71 @@ async def handle_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _show_all(update)
 
 
+def _build_event_message(event: dict, persona_name: str) -> str:
+    """Builds a formatted event message."""
+    title = event["title"]
+    location = f"\n📍 {event['location']}" if event["location"] else ""
+    notes = f"\n📝 {event['notes']}" if event["notes"] else ""
+    
+    if event["is_recurring"]:
+        rrule_info = f"\n🔁 חוזר: {event['rrule']}"
+    else:
+        rrule_info = ""
+    
+    if event["event_datetime"]:
+        try:
+            dt = datetime.fromisoformat(event["event_datetime"])
+            time_info = f"\n⏰ {dt.strftime('%d/%m/%Y %H:%M')}"
+        except:
+            time_info = ""
+    else:
+        time_info = ""
+    
+    reminder_mins = event["remind_before_minutes"]
+    reminder_info = f"\n🔔 תזכורת {reminder_mins} דקות לפני"
+    
+    return f"👤 {persona_name}\n🎯 {title}{location}{notes}{time_info}{rrule_info}{reminder_info}"
+
+
+def _build_event_keyboard(event_id: int) -> InlineKeyboardMarkup:
+    """Builds keyboard with edit, remove, and add reminder buttons."""
+    keyboard = [
+        [
+            InlineKeyboardButton("✏️ עריכה", callback_data=f"evt_edit:{event_id}"),
+            InlineKeyboardButton("🗑️ הסרה", callback_data=f"evt_remove:{event_id}"),
+            InlineKeyboardButton("🔔 הוסף תזכורת", callback_data=f"evt_reminder:{event_id}"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def _send_event_with_buttons(chat_id: int, event: dict, persona_name: str, update: Update) -> None:
+    """Sends a single event message with action buttons."""
+    text = _build_event_message(event, persona_name)
+    keyboard = _build_event_keyboard(event["id"])
+    await update.message._bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+
 async def _show_all(update: Update):
     personas = {p["id"]: p["name"] for p in get_all_personas()}
     events = get_all_active_events()
     if not events:
         await update.message.reply_text("אין אירועים רשומים עדיין.")
         return
-    lines = ["📅 *כל האירועים*\n"]
+    
+    await update.message.reply_text(f"📅 *כל האירועים* ({len(events)} סה״כ)")
     for e in events:
-        lines.append(_format_event_line(e, personas.get(e["persona_id"], "?")))
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await _send_event_with_buttons(
+            update.message.chat_id, 
+            e, 
+            personas.get(e["persona_id"], "?"),
+            update
+        )
 
 
 async def _show_all_callback(query):
@@ -149,10 +207,15 @@ async def _show_all_callback(query):
     if not events:
         await query.edit_message_text("אין אירועים רשומים עדיין.")
         return
-    lines = ["📅 *כל האירועים*"]
+    
+    await query.edit_message_text(f"📅 *כל האירועים* ({len(events)} סה״כ)", parse_mode="Markdown")
     for e in events:
-        lines.append(_format_event_line(e, personas.get(e["persona_id"], "?")))
-    await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+        await query.message._bot.send_message(
+            chat_id=query.message.chat_id,
+            text=_build_event_message(e, personas.get(e["persona_id"], "?")),
+            reply_markup=_build_event_keyboard(e["id"]),
+            parse_mode="Markdown"
+        )
 
 
 async def _show_persona(update: Update, name: str):
@@ -168,10 +231,15 @@ async def _show_persona(update: Update, name: str):
     if not events:
         await update.message.reply_text(f"אין אירועים עבור {name}.")
         return
-    lines = [f"📅 *אירועים עבור {name}*\n"]
+    
+    await update.message.reply_text(f"📅 *אירועים עבור {name}* ({len(events)} סה״כ)", parse_mode="Markdown")
     for e in events:
-        lines.append(_format_event_line(e, name))
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await _send_event_with_buttons(
+            update.message.chat_id,
+            e,
+            name,
+            update
+        )
 
 
 async def _show_persona_callback(query, name: str):
@@ -188,10 +256,15 @@ async def _show_persona_callback(query, name: str):
     if not events:
         await query.edit_message_text(f"אין אירועים עבור {name}.")
         return
-    lines = [f"📅 *אירועים עבור {name}*"]
+    
+    await query.edit_message_text(f"📅 *אירועים עבור {name}* ({len(events)} סה״כ)", parse_mode="Markdown")
     for e in events:
-        lines.append(_format_event_line(e, name))
-    await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+        await query.message._bot.send_message(
+            chat_id=query.message.chat_id,
+            text=_build_event_message(e, name),
+            reply_markup=_build_event_keyboard(e["id"]),
+            parse_mode="Markdown"
+        )
 
 
 async def _show_today(update: Update):
@@ -200,25 +273,33 @@ async def _show_today(update: Update):
     now = datetime.now(TZ)
     personas = {p["id"]: p["name"] for p in get_all_personas()}
     events = get_all_active_events()
-    lines = [f"📅 *אירועים להיום — {today.strftime('%d/%m/%Y')}*\n"]
-    found = False
-
+    
+    today_events = []
+    
     for e in events:
         if e["is_recurring"] and e["rrule"] and e["rrule_start"]:
             try:
-                dtstart = datetime.fromisoformat(e["rrule_start"]).replace(tzinfo=TZ)
-                rule = rrulestr(
-                    f"DTSTART:{dtstart.strftime('%Y%m%dT%H%M%S')}\nRRULE:{e['rrule']}",
-                    ignoretz=False
-                )
+                rrule_start_str = e["rrule_start"]
+                # Handle date-only strings (YYYY-MM-DD)
+                if isinstance(rrule_start_str, str):
+                    if len(rrule_start_str) == 10 and rrule_start_str[4] == '-':
+                        rrule_start_str = rrule_start_str + " 00:00:00"
+                
+                dtstart = datetime.fromisoformat(rrule_start_str)
+                if dtstart.tzinfo is None:
+                    dtstart = TZ.localize(dtstart)
+                elif dtstart.tzinfo != TZ:
+                    dtstart = dtstart.astimezone(TZ)
+                
+                rrule_str = f"RRULE:{e['rrule']}"
+                rule = rrulestr(rrule_str, ignoretz=False, dtstart=dtstart)
+                
                 day_start = TZ.localize(datetime.combine(today, datetime.min.time()))
                 day_end   = TZ.localize(datetime.combine(today, datetime.max.time()))
                 occs = rule.between(day_start, day_end, inc=True)
                 for occ in occs:
-                    name = personas.get(e["persona_id"], "?")
-                    lines.append(_format_event_line(e, name, occ))
-                    found = True
-            except Exception:
+                    today_events.append((e, personas.get(e["persona_id"], "?")))
+            except Exception as ex:
                 pass
         elif e["event_datetime"]:
             try:
@@ -226,15 +307,17 @@ async def _show_today(update: Update):
                 if dt.tzinfo is None:
                     dt = TZ.localize(dt)
                 if dt.date() == today:
-                    name = personas.get(e["persona_id"], "?")
-                    lines.append(_format_event_line(e, name, dt))
-                    found = True
+                    today_events.append((e, personas.get(e["persona_id"], "?")))
             except Exception:
                 pass
 
-    if not found:
-        lines.append("אין אירועים להיום 🎉")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    if not today_events:
+        await update.message.reply_text(f"אין אירועים להיום {today.strftime('%d/%m/%Y')} 🎉")
+        return
+    
+    await update.message.reply_text(f"📅 *אירועים להיום — {today.strftime('%d/%m/%Y')}* ({len(today_events)} סה״כ)", parse_mode="Markdown")
+    for e, name in today_events:
+        await _send_event_with_buttons(update.message.chat_id, e, name, update)
 
 
 async def _show_today_callback(query):
@@ -244,25 +327,33 @@ async def _show_today_callback(query):
     now = datetime.now(TZ)
     personas = {p["id"]: p["name"] for p in get_all_personas()}
     events = get_all_active_events()
-    lines = [f"📅 *אירועים להיום — {today.strftime('%d/%m/%Y')}*"]
-    found = False
-
+    
+    today_events = []
+    
     for e in events:
         if e["is_recurring"] and e["rrule"] and e["rrule_start"]:
             try:
-                dtstart = datetime.fromisoformat(e["rrule_start"]).replace(tzinfo=TZ)
-                rule = rrulestr(
-                    f"DTSTART:{dtstart.strftime('%Y%m%dT%H%M%S')}\nRRULE:{e['rrule']}",
-                    ignoretz=False
-                )
+                rrule_start_str = e["rrule_start"]
+                # Handle date-only strings (YYYY-MM-DD)
+                if isinstance(rrule_start_str, str):
+                    if len(rrule_start_str) == 10 and rrule_start_str[4] == '-':
+                        rrule_start_str = rrule_start_str + " 00:00:00"
+                
+                dtstart = datetime.fromisoformat(rrule_start_str)
+                if dtstart.tzinfo is None:
+                    dtstart = TZ.localize(dtstart)
+                elif dtstart.tzinfo != TZ:
+                    dtstart = dtstart.astimezone(TZ)
+                
+                rrule_str = f"RRULE:{e['rrule']}"
+                rule = rrulestr(rrule_str, ignoretz=False, dtstart=dtstart)
+                
                 day_start = TZ.localize(datetime.combine(today, datetime.min.time()))
                 day_end   = TZ.localize(datetime.combine(today, datetime.max.time()))
                 occs = rule.between(day_start, day_end, inc=True)
                 for occ in occs:
-                    name = personas.get(e["persona_id"], "?")
-                    lines.append(_format_event_line(e, name, occ))
-                    found = True
-            except Exception:
+                    today_events.append((e, personas.get(e["persona_id"], "?")))
+            except Exception as ex:
                 pass
         elif e["event_datetime"]:
             try:
@@ -270,15 +361,132 @@ async def _show_today_callback(query):
                 if dt.tzinfo is None:
                     dt = TZ.localize(dt)
                 if dt.date() == today:
-                    name = personas.get(e["persona_id"], "?")
-                    lines.append(_format_event_line(e, name, dt))
-                    found = True
+                    today_events.append((e, personas.get(e["persona_id"], "?")))
             except Exception:
                 pass
 
-    if not found:
-        lines.append("אין אירועים להיום 🎉")
-    await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+    if not today_events:
+        await query.edit_message_text(f"אין אירועים להיום {today.strftime('%d/%m/%Y')} 🎉")
+        return
+    
+    await query.edit_message_text(f"📅 *אירועים להיום — {today.strftime('%d/%m/%Y')}* ({len(today_events)} סה״כ)", parse_mode="Markdown")
+    for e, name in today_events:
+        await query.message._bot.send_message(
+            chat_id=query.message.chat_id,
+            text=_build_event_message(e, name),
+            reply_markup=_build_event_keyboard(e["id"]),
+            parse_mode="HTML"
+        )
+
+
+async def _show_tomorrow(update: Update):
+    from dateutil.rrule import rrulestr
+    tomorrow = date.today() + timedelta(days=1)
+    personas = {p["id"]: p["name"] for p in get_all_personas()}
+    events = get_all_active_events()
+    
+    tomorrow_events = []
+    
+    for e in events:
+        if e["is_recurring"] and e["rrule"] and e["rrule_start"]:
+            try:
+                rrule_start_str = e["rrule_start"]
+                # Handle date-only strings (YYYY-MM-DD)
+                if isinstance(rrule_start_str, str):
+                    if len(rrule_start_str) == 10 and rrule_start_str[4] == '-':
+                        rrule_start_str = rrule_start_str + " 00:00:00"
+                
+                dtstart = datetime.fromisoformat(rrule_start_str)
+                if dtstart.tzinfo is None:
+                    dtstart = TZ.localize(dtstart)
+                elif dtstart.tzinfo != TZ:
+                    dtstart = dtstart.astimezone(TZ)
+                
+                rrule_str = f"RRULE:{e['rrule']}"
+                rule = rrulestr(rrule_str, ignoretz=False, dtstart=dtstart)
+                
+                day_start = TZ.localize(datetime.combine(tomorrow, datetime.min.time()))
+                day_end   = TZ.localize(datetime.combine(tomorrow, datetime.max.time()))
+                occs = rule.between(day_start, day_end, inc=True)
+                for occ in occs:
+                    tomorrow_events.append((e, personas.get(e["persona_id"], "?")))
+            except Exception as ex:
+                pass
+        elif e["event_datetime"]:
+            try:
+                dt = datetime.fromisoformat(e["event_datetime"])
+                if dt.tzinfo is None:
+                    dt = TZ.localize(dt)
+                if dt.date() == tomorrow:
+                    tomorrow_events.append((e, personas.get(e["persona_id"], "?")))
+            except Exception:
+                pass
+
+    if not tomorrow_events:
+        await update.message.reply_text(f"אין אירועים למחר {tomorrow.strftime('%d/%m/%Y')} 🎉")
+        return
+    
+    await update.message.reply_text(f"📅 *אירועים למחר — {tomorrow.strftime('%d/%m/%Y')}* ({len(tomorrow_events)} סה״כ)", parse_mode="Markdown")
+    for e, name in tomorrow_events:
+        await _send_event_with_buttons(update.message.chat_id, e, name, update)
+
+
+async def _show_tomorrow_callback(query):
+    """Show tomorrow's events via callback query."""
+    from dateutil.rrule import rrulestr
+    tomorrow = date.today() + timedelta(days=1)
+    personas = {p["id"]: p["name"] for p in get_all_personas()}
+    events = get_all_active_events()
+    
+    tomorrow_events = []
+    
+    for e in events:
+        if e["is_recurring"] and e["rrule"] and e["rrule_start"]:
+            try:
+                rrule_start_str = e["rrule_start"]
+                # Handle date-only strings (YYYY-MM-DD)
+                if isinstance(rrule_start_str, str):
+                    if len(rrule_start_str) == 10 and rrule_start_str[4] == '-':
+                        rrule_start_str = rrule_start_str + " 00:00:00"
+                
+                dtstart = datetime.fromisoformat(rrule_start_str)
+                if dtstart.tzinfo is None:
+                    dtstart = TZ.localize(dtstart)
+                elif dtstart.tzinfo != TZ:
+                    dtstart = dtstart.astimezone(TZ)
+                
+                rrule_str = f"RRULE:{e['rrule']}"
+                rule = rrulestr(rrule_str, ignoretz=False, dtstart=dtstart)
+                
+                day_start = TZ.localize(datetime.combine(tomorrow, datetime.min.time()))
+                day_end   = TZ.localize(datetime.combine(tomorrow, datetime.max.time()))
+                occs = rule.between(day_start, day_end, inc=True)
+                for occ in occs:
+                    tomorrow_events.append((e, personas.get(e["persona_id"], "?")))
+            except Exception as ex:
+                pass
+        elif e["event_datetime"]:
+            try:
+                dt = datetime.fromisoformat(e["event_datetime"])
+                if dt.tzinfo is None:
+                    dt = TZ.localize(dt)
+                if dt.date() == tomorrow:
+                    tomorrow_events.append((e, personas.get(e["persona_id"], "?")))
+            except Exception:
+                pass
+
+    if not tomorrow_events:
+        await query.edit_message_text(f"אין אירועים למחר {tomorrow.strftime('%d/%m/%Y')} 🎉")
+        return
+    
+    await query.edit_message_text(f"📅 *אירועים למחר — {tomorrow.strftime('%d/%m/%Y')}* ({len(tomorrow_events)} סה״כ)", parse_mode="Markdown")
+    for e, name in tomorrow_events:
+        await query.message._bot.send_message(
+            chat_id=query.message.chat_id,
+            text=_build_event_message(e, name),
+            reply_markup=_build_event_keyboard(e["id"]),
+            parse_mode="HTML"
+        )
 
 
 def _format_event_line(event, persona_name: str, dt=None) -> str:
@@ -298,6 +506,61 @@ def _format_event_line(event, persona_name: str, dt=None) -> str:
         except Exception:
             return f"• {persona_name} | {title}{location}"
     return f"• {persona_name} | {title}{location}"
+
+
+def _try_handle_show_request(text: str, update: Update) -> str:
+    """
+    Attempts to detect and handle show/display requests in Hebrew or English.
+    Patterns:
+    - "הצג ארועים עבור [name]" → show events for persona
+    - "הצג [name]" → show events for persona
+    - "show [name]" → show events for persona (English)
+    - "[name]" → just the name alone (show events for persona)
+    - "הצג היום" / "show today" → show today's events
+    - "הצג מחר" / "show tomorrow" → show tomorrow's events
+    - "הצג הכל" / "show all" → show all events
+    
+    Returns the persona name to show if matched, "ALL", "TODAY", "TOMORROW", or None.
+    """
+    import re
+    
+    text_lower = text.lower()
+    text_clean = text.strip()
+    
+    # Check for "show all"
+    if "הצג הכל" in text or "show all" in text_lower:
+        return "ALL"
+    
+    # Check for "show today"
+    if "הצג היום" in text or "show today" in text_lower:
+        return "TODAY"
+    
+    # Check for "show tomorrow"
+    if "הצג מחר" in text or "show tomorrow" in text_lower:
+        return "TOMORROW"
+    
+    # Check for "הצג ארועים עבור [name]" or "הצג [name]" patterns
+    personas = get_all_personas()
+    persona_names = {p["name"]: p for p in personas}
+    
+    for persona_name in persona_names.keys():
+        # Pattern: "הצג ארועים עבור [name]"
+        if f"הצג ארועים עבור {persona_name}" in text or f"הצג אירועים עבור {persona_name}" in text:
+            return persona_name
+        
+        # Pattern: "הצג [name]" (Hebrew verb "show")
+        if f"הצג {persona_name}" in text:
+            return persona_name
+        
+        # Pattern: "show [name]" (English)
+        if f"show {persona_name}" in text_lower:
+            return persona_name
+        
+        # Pattern: just the name itself (exact match)
+        if text_clean == persona_name:
+            return persona_name
+    
+    return None
 
 
 # ── Incoming reply handler ────────────────────────────────────────────────────
@@ -378,6 +641,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "ביטול":
         context.user_data.clear()
         await msg.reply_text("ביטלתי את הפעולה הנוכחית. ✓")
+        return
+
+    # ── Edit event field input ─────────────────────────────────────────────────
+    edit_state = context.user_data.get("edit_event_state")
+    if edit_state and edit_state.get("step") == "awaiting_input" and text:
+        await _handle_edit_field_input(update, context, text)
+        return
+
+    # ── Free-text show/display requests ────────────────────────────────────────
+    # Support patterns like "הצג ארועים עבור עלמה", "הצג עלמה", "show alma", etc.
+    show_request = _try_handle_show_request(text, update)
+    if show_request:
+        if show_request == "ALL":
+            await _show_all(update)
+        elif show_request == "TODAY":
+            await _show_today(update)
+        elif show_request == "TOMORROW":
+            await _show_tomorrow(update)
+        else:
+            await _show_persona(update, show_request)
         return
 
     # Only handle replies to the bot's own messages from here on
@@ -605,3 +888,718 @@ async def _snooze_inline_callback(context: ContextTypes.DEFAULT_TYPE):
         text=f"⏰ תזכורת חוזרת:\n\n{data['text']}",
         reply_markup=data.get("reply_markup"),
     )
+
+
+# ── Event Management Callbacks (Edit, Remove, Add Reminder) ──────────────────
+
+async def handle_event_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle edit button click for an event."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        _, event_id_str = query.data.split(":")
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    event = get_event_by_id(event_id)
+    if not event:
+        await query.edit_message_text("אולם אירוע זה לא נמצא.")
+        return
+    
+    # Initialize edit flow state
+    context.user_data["edit_event_state"] = {
+        "event_id": event_id,
+        "step": "choose_field",  # choose_field, editing_title, editing_datetime, etc.
+    }
+    
+    # Show field selection menu
+    keyboard = [
+        [InlineKeyboardButton("📝 כותרת", callback_data=f"edit_field:title:{event_id}")],
+        [InlineKeyboardButton("📍 מיקום", callback_data=f"edit_field:location:{event_id}")],
+        [InlineKeyboardButton("⏰ זמן", callback_data=f"edit_field:datetime:{event_id}")],
+        [InlineKeyboardButton("� חוזר", callback_data=f"edit_field:recurring:{event_id}")],
+        [InlineKeyboardButton("�🔔 זמן תזכורת", callback_data=f"edit_field:reminder:{event_id}")],
+        [InlineKeyboardButton("ביטול", callback_data="cancel_edit")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"✏️ עריכת {event['title']}\n\nבחרו שדה לעריכה:",
+        reply_markup=reply_markup
+    )
+
+
+async def handle_event_remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle remove button click for an event."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        _, event_id_str = query.data.split(":")
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    event = get_event_by_id(event_id)
+    if not event:
+        await query.edit_message_text("אירוע זה לא נמצא.")
+        return
+    
+    # Confirm removal
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ כן, הסר", callback_data=f"confirm_remove:{event_id}"),
+            InlineKeyboardButton("❌ לא, בטל", callback_data="cancel_remove"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"⚠️ האם למחוק את \"{event['title']}\"?\n\nפעולה זו לא ניתן לשחזור.",
+        reply_markup=reply_markup
+    )
+
+
+async def handle_event_reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle add reminder button click for an event."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        _, event_id_str = query.data.split(":")
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    event = get_event_by_id(event_id)
+    if not event:
+        await query.edit_message_text("אירוע זה לא נמצא.")
+        return
+    
+    # Initialize reminder flow state
+    context.user_data["add_reminder_state"] = {
+        "event_id": event_id,
+        "step": "select_timing",
+        "reminders": [],
+    }
+    
+    # Show preset reminder options
+    keyboard = [
+        [InlineKeyboardButton("15 דקות לפני", callback_data=f"add_reminder:15:{event_id}")],
+        [InlineKeyboardButton("30 דקות לפני", callback_data=f"add_reminder:30:{event_id}")],
+        [InlineKeyboardButton("1 שעה לפני", callback_data=f"add_reminder:60:{event_id}")],
+        [InlineKeyboardButton("2 שעות לפני", callback_data=f"add_reminder:120:{event_id}")],
+        [InlineKeyboardButton("1 יום לפני", callback_data=f"add_reminder:1440:{event_id}")],
+        [InlineKeyboardButton("הוסף עוד", callback_data="add_another_reminder")],
+        [InlineKeyboardButton("סיום", callback_data=f"finish_reminders:{event_id}")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"🔔 הוסף תזכורות ל\"{event['title']}\"\n\nבחרו כמה דקות לפני האירוע:",
+        reply_markup=reply_markup
+    )
+
+
+async def handle_confirm_remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle confirmation to remove an event."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        _, event_id_str = query.data.split(":")
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    from db.queries import update_event
+    event = get_event_by_id(event_id)
+    
+    if event:
+        update_event(event_id, active=False)
+        await query.edit_message_text(f"✅ \"{ event['title']}\" הסר בהצלחה.")
+    else:
+        await query.edit_message_text("אירוע לא נמצא.")
+
+
+async def handle_add_reminder_timing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle reminder timing selection."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        parts = query.data.split(":")
+        _, minutes_str, event_id_str = parts
+        minutes = int(minutes_str)
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    # Add reminder to the list
+    if "add_reminder_state" not in context.user_data:
+        context.user_data["add_reminder_state"] = {"event_id": event_id, "reminders": []}
+    
+    context.user_data["add_reminder_state"]["reminders"].append(minutes)
+    
+    reminders_text = "\n".join([f"  • {m} דקות לפני" for m in context.user_data["add_reminder_state"]["reminders"]])
+    
+    # Show option to add more or finish
+    keyboard = [
+        [InlineKeyboardButton("15 דקות לפני", callback_data=f"add_reminder:15:{event_id}")],
+        [InlineKeyboardButton("30 דקות לפני", callback_data=f"add_reminder:30:{event_id}")],
+        [InlineKeyboardButton("1 שעה לפני", callback_data=f"add_reminder:60:{event_id}")],
+        [InlineKeyboardButton("2 שעות לפני", callback_data=f"add_reminder:120:{event_id}")],
+        [InlineKeyboardButton("1 יום לפני", callback_data=f"add_reminder:1440:{event_id}")],
+        [InlineKeyboardButton("סיום", callback_data=f"finish_reminders:{event_id}")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"🔔 תזכורות שנוספו:\n{reminders_text}\n\nהוסף עוד או בחר סיום:",
+        reply_markup=reply_markup
+    )
+
+
+async def handle_finish_reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle finishing the reminder addition flow."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        _, event_id_str = query.data.split(":")
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    state = context.user_data.get("add_reminder_state", {})
+    reminders = state.get("reminders", [])
+    
+    if reminders:
+        from db.queries import update_event
+        event = get_event_by_id(event_id)
+        
+        # For now, update the main remind_before_minutes to the first reminder
+        # In a more advanced system, you'd store multiple reminders
+        if event:
+            update_event(event_id, remind_before_minutes=reminders[0])
+            reminders_text = "\n".join([f"  • {m} דקות לפני האירוע" for m in reminders])
+            await query.edit_message_text(
+                f"✅ התזכורות לאירוע \"{event['title']}\" עודכנו:\n{reminders_text}"
+            )
+    else:
+        await query.edit_message_text("לא נוספו תזכורות.")
+    
+    # Clean up state
+    context.user_data.pop("add_reminder_state", None)
+
+
+async def handle_edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle field selection in edit flow."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        parts = query.data.split(":")
+        _, field, event_id_str = parts[0], parts[1], parts[2]
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    event = get_event_by_id(event_id)
+    if not event:
+        await query.edit_message_text("אירוע לא נמצא.")
+        return
+    
+    # Initialize edit state for this specific field
+    if field == "datetime":
+        # New day-of-week based flow
+        context.user_data["edit_event_state"] = {
+            "event_id": event_id,
+            "field": field,
+            "step": "awaiting_day_name",
+            "temp_data": {},
+        }
+        
+        keyboard = [
+            [InlineKeyboardButton("ראשון", callback_data=f"day_select:sunday:{event_id}")],
+            [InlineKeyboardButton("שני", callback_data=f"day_select:monday:{event_id}")],
+            [InlineKeyboardButton("שלישי", callback_data=f"day_select:tuesday:{event_id}")],
+            [InlineKeyboardButton("רביעי", callback_data=f"day_select:wednesday:{event_id}")],
+            [InlineKeyboardButton("חמישי", callback_data=f"day_select:thursday:{event_id}")],
+            [InlineKeyboardButton("שישי", callback_data=f"day_select:friday:{event_id}")],
+            [InlineKeyboardButton("שבת", callback_data=f"day_select:saturday:{event_id}")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("📅 בחרו את יום השבוע:", reply_markup=reply_markup)
+    elif field == "recurring":
+        # Recurring status toggle flow
+        context.user_data["edit_event_state"] = {
+            "event_id": event_id,
+            "field": field,
+            "step": "awaiting_recurring_choice",
+        }
+        
+        keyboard = [
+            [InlineKeyboardButton("כן, חוזר", callback_data=f"edit_recurring:yes:{event_id}")],
+            [InlineKeyboardButton("לא, חד-פעמי", callback_data=f"edit_recurring:no:{event_id}")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        current_status = "חוזר" if event["is_recurring"] else "חד-פעמי"
+        await query.edit_message_text(
+            f"🔁 סטטוס נוכחי: {current_status}\n\nבחרו סטטוס חדש:",
+            reply_markup=reply_markup
+        )
+    else:
+        # Simple field edit
+        context.user_data["edit_event_state"] = {
+            "event_id": event_id,
+            "field": field,
+            "step": "awaiting_input",
+        }
+        
+        field_prompts = {
+            "title": "📝 שלחו את הכותרת החדשה:",
+            "location": "📍 שלחו את המיקום החדש:",
+            "reminder": "🔔 שלחו את מספר הדקות לתזכורת:",
+        }
+        
+        prompt = field_prompts.get(field, "שנו את הערך:")
+        await query.edit_message_text(prompt)
+
+
+async def handle_cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle cancel edit button."""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data.pop("edit_event_state", None)
+    await query.edit_message_text("✓ ביטלתי את העריכה.")
+
+
+async def handle_cancel_remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle cancel remove button."""
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text("✓ ביטלתי את ההסרה.")
+
+
+async def _handle_edit_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE, new_value: str) -> None:
+    """Handle user input for editing an event field."""
+    msg = update.message
+    edit_state = context.user_data.get("edit_event_state", {})
+    event_id = edit_state.get("event_id")
+    field = edit_state.get("field")
+    
+    if not event_id or not field:
+        await msg.reply_text("❌ שגיאה: לא הצלחתי לזהות איזה שדה לערוך.")
+        return
+    
+    from db.queries import update_event
+    event = get_event_by_id(event_id)
+    
+    if not event:
+        await msg.reply_text("❌ האירוע לא נמצא.")
+        context.user_data.pop("edit_event_state", None)
+        return
+    
+    try:
+        # ── Regular field edits ────────────────────────────────────────────────
+        if field == "title":
+            update_event(event_id, title=new_value)
+            await msg.reply_text(f"✅ כותרת עודכנה ל: {new_value}")
+        
+        elif field == "location":
+            update_event(event_id, location=new_value)
+            await msg.reply_text(f"✅ מיקום עודכן ל: {new_value}")
+        
+        elif field == "reminder":
+            try:
+                minutes = int(new_value)
+                if minutes < 0:
+                    raise ValueError("חייב להיות מספר חיובי")
+                update_event(event_id, remind_before_minutes=minutes)
+                await msg.reply_text(f"✅ תזכורת עודכנה ל: {minutes} דקות לפני היום")
+            except ValueError:
+                await msg.reply_text("❌ זמן תזכורת חייב להיות מספר חיובי (בדקות).")
+                return
+        
+        else:
+            await msg.reply_text("❌ שדה לא חוקי.")
+            return
+        
+        # Clean up state after successful edit
+        context.user_data.pop("edit_event_state", None)
+        
+    except Exception as e:
+        await msg.reply_text(f"❌ שגיאה בעדכון: {str(e)}")
+        context.user_data.pop("edit_event_state", None)
+
+
+async def handle_day_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle day-of-week selection in datetime edit flow."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        parts = query.data.split(":")
+        day_name, event_id_str = parts[1], parts[2]
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    event = get_event_by_id(event_id)
+    if not event:
+        await query.edit_message_text("אירוע לא נמצא.")
+        context.user_data.pop("edit_event_state", None)
+        return
+    
+    # Store day name and move to next step
+    edit_state = context.user_data.get("edit_event_state", {})
+    temp_data = edit_state.get("temp_data", {})
+    temp_data["day_name"] = day_name
+    
+    context.user_data["edit_event_state"]["temp_data"] = temp_data
+    context.user_data["edit_event_state"]["step"] = "awaiting_start_hour"
+    
+    day_hebrew = {
+        "sunday": "ראשון",
+        "monday": "שני",
+        "tuesday": "שלישי",
+        "wednesday": "רביעי",
+        "thursday": "חמישי",
+        "friday": "שישי",
+        "saturday": "שבת",
+    }
+    
+    # Show hour picker for start time
+    keyboard = []
+    for hour in range(0, 24, 4):
+        row = []
+        for h in range(hour, min(hour + 4, 24)):
+            row.append(InlineKeyboardButton(f"{h:02d}", callback_data=f"hour_sel:start:{h}:{event_id}"))
+        keyboard.append(row)
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"🕐 {day_hebrew.get(day_name, day_name)}\n\nבחרו שעת התחלה:",
+        reply_markup=reply_markup
+    )
+
+
+async def handle_hour_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle hour selection for start/end time."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        parts = query.data.split(":")
+        time_type, hour_str, event_id_str = parts[1], parts[2], parts[3]
+        hour = int(hour_str)
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    edit_state = context.user_data.get("edit_event_state", {})
+    temp_data = edit_state.get("temp_data", {})
+    
+    # Show minute picker
+    keyboard = []
+    for minute in range(0, 60, 15):
+        row = []
+        for m in range(minute, min(minute + 15, 60), 5):
+            row.append(InlineKeyboardButton(f"{m:02d}", callback_data=f"min_sel:{time_type}:{hour}:{m}:{event_id}"))
+        keyboard.append(row)
+    
+    time_label = "התחלה" if time_type == "start" else "סיום"
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(f"בחרו דקות ל{time_label} ({hour:02d}:??):", reply_markup=reply_markup)
+
+
+async def handle_minute_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle minute selection and store the time."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        parts = query.data.split(":")
+        time_type, hour_str, minute_str, event_id_str = parts[1], parts[2], parts[3], parts[4]
+        hour = int(hour_str)
+        minute = int(minute_str)
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    edit_state = context.user_data.get("edit_event_state", {})
+    temp_data = edit_state.get("temp_data", {})
+    
+    time_str = f"{hour:02d}:{minute:02d}"
+    
+    if time_type == "start":
+        temp_data["start_time"] = time_str
+        context.user_data["edit_event_state"]["temp_data"] = temp_data
+        context.user_data["edit_event_state"]["step"] = "awaiting_end_hour"
+        
+        # Show hour picker for end time
+        keyboard = []
+        for h in range(0, 24, 4):
+            row = []
+            for end_h in range(h, min(h + 4, 24)):
+                row.append(InlineKeyboardButton(f"{end_h:02d}", callback_data=f"hour_sel:end:{end_h}:{event_id}"))
+            keyboard.append(row)
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"🕑 התחלה: {time_str}\n\nעכשיו בחרו שעת סיום:", reply_markup=reply_markup)
+    
+    else:  # end time
+        temp_data["end_time"] = time_str
+        context.user_data["edit_event_state"]["temp_data"] = temp_data
+        context.user_data["edit_event_state"]["step"] = "awaiting_recurring"
+        
+        keyboard = [
+            [InlineKeyboardButton("כן, חוזר", callback_data=f"dt_recurring_yes:{event_id}")],
+            [InlineKeyboardButton("לא, חד-פעמי", callback_data=f"dt_recurring_no:{event_id}")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            f"⏰ סיכום:\n• התחלה: {temp_data.get('start_time')}\n• סיום: {time_str}\n\n🔁 האם זה אירוע חוזר?",
+            reply_markup=reply_markup
+        )
+
+
+async def handle_datetime_recurring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle recurring selection in datetime edit flow."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        parts = query.data.split(":")
+        # Format: dt_recurring_yes:123 or dt_recurring_no:123
+        action_part = parts[0]  # "dt_recurring_yes" or "dt_recurring_no"
+        event_id_str = parts[1]
+        recurring_str = action_part.split("_")[-1]  # Extract "yes" or "no"
+        is_recurring = recurring_str == "yes"
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    edit_state = context.user_data.get("edit_event_state", {})
+    temp_data = edit_state.get("temp_data", {})
+    
+    event = get_event_by_id(event_id)
+    if not event:
+        await query.edit_message_text("אירוע לא נמצא.")
+        context.user_data.pop("edit_event_state", None)
+        return
+    
+    from db.queries import update_event
+    
+    try:
+        day_name = temp_data.get("day_name")
+        start_time = temp_data.get("start_time")
+        end_time = temp_data.get("end_time")
+        
+        # Map day names to rrule day codes
+        day_to_rrule = {
+            "sunday": "SU",
+            "monday": "MO",
+            "tuesday": "TU",
+            "wednesday": "WE",
+            "thursday": "TH",
+            "friday": "FR",
+            "saturday": "SA",
+        }
+        
+        if is_recurring:
+            # Create recurring event with this day of week
+            rrule_day = day_to_rrule.get(day_name, "MO")
+            rrule_str = f"FREQ=WEEKLY;BYDAY={rrule_day};BYHOUR={start_time.split(':')[0]};BYMINUTE={start_time.split(':')[1]}"
+            
+            # Use today's date as rrule_start
+            today = date.today().isoformat()
+            
+            update_event(
+                event_id,
+                is_recurring=True,
+                rrule=rrule_str,
+                rrule_start=today,
+                event_datetime=None
+            )
+            
+            await query.edit_message_text(
+                f"✅ אירוע עודכן כחוזר:\n"
+                f"• יום: {day_name}\n"
+                f"• שעות: {start_time}-{end_time}"
+            )
+        else:
+            # Single event - need to pick a specific date
+            # For now, use next occurrence of this day
+            today = date.today()
+            day_to_num = {
+                "sunday": 6,
+                "monday": 0,
+                "tuesday": 1,
+                "wednesday": 2,
+                "thursday": 3,
+                "friday": 4,
+                "saturday": 5,
+            }
+            
+            target_day = day_to_num.get(day_name, 0)
+            days_ahead = target_day - today.weekday()
+            if days_ahead <= 0:  # Target day already happened this week
+                days_ahead += 7
+            
+            event_date = today + timedelta(days=days_ahead)
+            full_datetime = f"{event_date.isoformat()} {start_time}"
+            
+            update_event(event_id, event_datetime=full_datetime, is_recurring=False, rrule=None, rrule_start=None)
+            
+            await query.edit_message_text(
+                f"✅ זמן עודכן:\n"
+                f"• תאריך: {event_date.strftime('%d/%m/%Y')}\n"
+                f"• שעות: {start_time}-{end_time}"
+            )
+        
+        context.user_data.pop("edit_event_state", None)
+    
+    except Exception as e:
+        await query.edit_message_text(f"❌ שגיאה בעדכון: {str(e)}")
+        context.user_data.pop("edit_event_state", None)
+
+
+async def handle_rrule_preset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle preset recurrence rule selection."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        parts = query.data.split(":")
+        rrule_type, event_id_str = parts[1], parts[2]
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    edit_state = context.user_data.get("edit_event_state", {})
+    temp_data = edit_state.get("temp_data", {})
+    
+    event = get_event_by_id(event_id)
+    if not event:
+        await query.edit_message_text("אירוע לא נמצא.")
+        context.user_data.pop("edit_event_state", None)
+        return
+    
+    from db.queries import update_event
+    
+    # Map preset types to rrule strings
+    rrule_map = {
+        "daily": "FREQ=DAILY",
+        "weekly": "FREQ=WEEKLY",
+        "weekdays": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+    }
+    
+    rrule_str = rrule_map.get(rrule_type)
+    if not rrule_str:
+        await query.edit_message_text("❌ סוג חזרה לא ידוע.")
+        return
+    
+    try:
+        day = temp_data.get("day")
+        
+        update_event(
+            event_id,
+            is_recurring=True,
+            rrule=rrule_str,
+            rrule_start=day,
+            event_datetime=None
+        )
+        
+        await query.edit_message_text(f"✅ אירוע עודכן כחוזר:\n• התחלה: {day}\n• חוזר: {rrule_type}")
+        context.user_data.pop("edit_event_state", None)
+    
+    except Exception as e:
+        await query.edit_message_text(f"❌ שגיאה בעדכון: {str(e)}")
+        context.user_data.pop("edit_event_state", None)
+
+
+async def handle_edit_recurring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle recurring status selection in edit flow."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        parts = query.data.split(":")
+        recurring_choice, event_id_str = parts[1], parts[2]
+        is_recurring = recurring_choice == "yes"
+        event_id = int(event_id_str)
+    except:
+        return
+    
+    event = get_event_by_id(event_id)
+    if not event:
+        await query.edit_message_text("אירוע לא נמצא.")
+        context.user_data.pop("edit_event_state", None)
+        return
+    
+    from db.queries import update_event
+    
+    try:
+        if is_recurring:
+            # If switching to recurring, need to set up rrule
+            # For now, use a simple weekly recurrence on the current day
+            if event.get("event_datetime"):
+                event_dt = datetime.fromisoformat(event["event_datetime"])
+                day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+                day_name = day_names[event_dt.weekday()]
+                
+                day_to_rrule = {
+                    "sunday": "SU",
+                    "monday": "MO",
+                    "tuesday": "TU",
+                    "wednesday": "WE",
+                    "thursday": "TH",
+                    "friday": "FR",
+                    "saturday": "SA",
+                }
+                
+                rrule_day = day_to_rrule.get(day_name, "MO")
+                hour = event_dt.hour
+                minute = event_dt.minute
+                rrule_str = f"FREQ=WEEKLY;BYDAY={rrule_day};BYHOUR={hour:02d};BYMINUTE={minute:02d}"
+                start_date = date.today().isoformat()
+                
+                update_event(
+                    event_id,
+                    is_recurring=True,
+                    rrule=rrule_str,
+                    rrule_start=start_date,
+                    event_datetime=None
+                )
+                await query.edit_message_text(
+                    f"✅ אירוע עודכן:\n"
+                    f"• סטטוס: חוזר מדי שבוע\n"
+                    f"• יום: {day_name}\n"
+                    f"• שעה: {hour:02d}:{minute:02d}"
+                )
+            else:
+                # Event already recurring, no changes needed
+                await query.edit_message_text("✓ אירוע זה כבר חוזר.")
+        else:
+            # Switch to one-time event
+            # Clear the rrule data
+            update_event(
+                event_id,
+                is_recurring=False,
+                rrule=None,
+                rrule_start=None,
+                event_datetime=event.get("event_datetime")
+            )
+            await query.edit_message_text("✅ אירוע עודכן:\n• סטטוס: חד-פעמי")
+        
+        context.user_data.pop("edit_event_state", None)
+    
+    except Exception as e:
+        await query.edit_message_text(f"❌ שגיאה בעדכון: {str(e)}")
+        context.user_data.pop("edit_event_state", None)

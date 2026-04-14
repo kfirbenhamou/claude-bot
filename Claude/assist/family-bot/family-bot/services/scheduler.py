@@ -159,3 +159,97 @@ def _is_due(
     if now < reminder_time:
         return (reminder_time - now).total_seconds() <= early_tolerance_seconds
     return (now - reminder_time).total_seconds() <= late_window_seconds
+
+
+async def send_daily_summary(bot: Bot):
+    """Send daily summary of all events for today to the group chat."""
+    now = datetime.now(TZ)
+    today = date.today()
+    logger.info(f"[scheduler] שולח סיכום יומי — {today.strftime('%d/%m/%Y')}")
+    
+    from db.queries import get_all_personas
+    
+    personas = {p["id"]: p["name"] for p in get_all_personas()}
+    events = get_all_active_events()
+    
+    today_events = []
+    
+    for e in events:
+        if e["is_recurring"] and e["rrule"] and e["rrule_start"]:
+            try:
+                rrule_start_str = e["rrule_start"]
+                if isinstance(rrule_start_str, str):
+                    if len(rrule_start_str) == 10 and rrule_start_str[4] == '-':
+                        rrule_start_str = rrule_start_str + " 00:00:00"
+                
+                dtstart = _ensure_aware(datetime.fromisoformat(rrule_start_str))
+                
+                if dtstart.tzinfo != TZ:
+                    dtstart = dtstart.astimezone(TZ)
+                
+                rrule_str = f"RRULE:{e['rrule']}"
+                rule = rrulestr(rrule_str, ignoretz=False, dtstart=dtstart)
+                
+                day_start = TZ.localize(datetime.combine(today, datetime.min.time()))
+                day_end = TZ.localize(datetime.combine(today, datetime.max.time()))
+                occs = rule.between(day_start, day_end, inc=True)
+                
+                for occ in occs:
+                    today_events.append({
+                        "event": e,
+                        "persona_name": personas.get(e["persona_id"], "?"),
+                        "datetime": occ if isinstance(occ, datetime) else datetime.combine(occ, datetime.min.time())
+                    })
+            except Exception as exc:
+                logger.error(f"[scheduler] שגיאה בעיבוד אירוע חוזר {e['id']}: {exc}")
+        
+        elif e["event_datetime"]:
+            try:
+                dt = datetime.fromisoformat(e["event_datetime"])
+                if dt.tzinfo is None:
+                    dt = TZ.localize(dt)
+                elif dt.tzinfo != TZ:
+                    dt = dt.astimezone(TZ)
+                
+                if dt.date() == today:
+                    today_events.append({
+                        "event": e,
+                        "persona_name": personas.get(e["persona_id"], "?"),
+                        "datetime": dt
+                    })
+            except Exception as exc:
+                logger.error(f"[scheduler] שגיאה בעיבוד אירוע {e['id']}: {exc}")
+    
+    if not today_events:
+        logger.info(f"[scheduler] אין אירועים להיום {today.strftime('%d/%m/%Y')}")
+        return
+    
+    # Sort events by time
+    today_events.sort(key=lambda x: x["datetime"])
+    
+    # Build summary message
+    GROUP_CHAT_ID = int(os.getenv("FAMILY_GROUP_CHAT_ID", "0"))
+    
+    lines = [f"📅 *תכנית היום — {today.strftime('%d/%m/%Y')}*"]
+    lines.append("")
+    
+    for item in today_events:
+        e = item["event"]
+        name = item["persona_name"]
+        dt = item["datetime"]
+        time_str = dt.strftime("%H:%M")
+        location_str = f" • {e['location']}" if e.get("location") else ""
+        title = e["title"]
+        lines.append(f"🕐 {time_str} — *{name}* | {title}{location_str}")
+    
+    message = "\n".join(lines)
+    
+    try:
+        await bot.send_message(
+            chat_id=GROUP_CHAT_ID,
+            text=message,
+            parse_mode="Markdown"
+        )
+        logger.info(f"[scheduler] סיכום יומי נשלח בהצלחה ({len(today_events)} אירועים)")
+    except Exception as e:
+        logger.error(f"[scheduler] שגיאה בשליחת סיכום יומי: {e}")

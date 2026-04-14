@@ -27,9 +27,24 @@ from handlers.incoming import (
     handle_show_callback,
     handle_event_action_callback,
     handle_qa_exit_callback,
+    handle_event_edit_callback,
+    handle_event_remove_callback,
+    handle_event_reminder_callback,
+    handle_confirm_remove_callback,
+    handle_add_reminder_timing_callback,
+    handle_finish_reminders_callback,
+    handle_edit_field_callback,
+    handle_edit_recurring_callback,
+    handle_cancel_edit_callback,
+    handle_cancel_remove_callback,
+    handle_day_select_callback,
+    handle_hour_select_callback,
+    handle_minute_select_callback,
+    handle_datetime_recurring_callback,
+    handle_rrule_preset_callback,
 )
 from handlers.add_event_wizard import build_add_event_handler
-from services.scheduler import check_and_send_reminders
+from services.scheduler import check_and_send_reminders, send_daily_summary
 
 load_dotenv()
 
@@ -49,16 +64,43 @@ async def scheduler_job(bot: Bot):
         logger.error(f"Scheduler error: {e}")
 
 
+async def daily_summary_job(bot: Bot):
+    try:
+        await send_daily_summary(bot)
+    except Exception as e:
+        logger.error(f"Daily summary job error: {e}")
+
+
 def main():
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", handle_start))
+    
     # Reminder inline actions (✅/⏭/⏰/❓)
     app.add_handler(CallbackQueryHandler(handle_event_action_callback, pattern="^evt:"))
+    
+    # Event management callbacks (Edit, Remove, Add Reminder)
+    app.add_handler(CallbackQueryHandler(handle_event_edit_callback, pattern="^evt_edit:"))
+    app.add_handler(CallbackQueryHandler(handle_edit_field_callback, pattern="^edit_field:"))
+    app.add_handler(CallbackQueryHandler(handle_edit_recurring_callback, pattern="^edit_recurring:"))
+    app.add_handler(CallbackQueryHandler(handle_cancel_edit_callback, pattern="^cancel_edit$"))
+    app.add_handler(CallbackQueryHandler(handle_day_select_callback, pattern="^day_select:"))
+    app.add_handler(CallbackQueryHandler(handle_hour_select_callback, pattern="^hour_sel:"))
+    app.add_handler(CallbackQueryHandler(handle_minute_select_callback, pattern="^min_sel:"))
+    app.add_handler(CallbackQueryHandler(handle_datetime_recurring_callback, pattern="^dt_recurring_"))
+    app.add_handler(CallbackQueryHandler(handle_rrule_preset_callback, pattern="^rrule_"))
+    app.add_handler(CallbackQueryHandler(handle_event_remove_callback, pattern="^evt_remove:"))
+    app.add_handler(CallbackQueryHandler(handle_cancel_remove_callback, pattern="^cancel_remove$"))
+    app.add_handler(CallbackQueryHandler(handle_confirm_remove_callback, pattern="^confirm_remove:"))
+    app.add_handler(CallbackQueryHandler(handle_event_reminder_callback, pattern="^evt_reminder:"))
+    app.add_handler(CallbackQueryHandler(handle_add_reminder_timing_callback, pattern="^add_reminder:"))
+    app.add_handler(CallbackQueryHandler(handle_finish_reminders_callback, pattern="^finish_reminders:"))
+    
     # Q&A conversation exit
     app.add_handler(CallbackQueryHandler(handle_qa_exit_callback, pattern="^qa_exit$"))
+    
     # Help/show menu callbacks
     app.add_handler(CallbackQueryHandler(handle_show_callback))
     app.add_handler(build_add_event_handler())
@@ -74,6 +116,15 @@ def main():
         minutes=1,
         args=[app.bot],
         id="reminder_check",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        daily_summary_job,
+        "cron",
+        hour=8,
+        minute=0,
+        args=[app.bot],
+        id="daily_summary",
         replace_existing=True,
     )
 

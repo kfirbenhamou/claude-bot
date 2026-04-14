@@ -26,7 +26,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from datetime import datetime
+from datetime import datetime, date
 import pytz
 import re
 import os
@@ -46,12 +46,10 @@ TZ = pytz.timezone(os.getenv("TIMEZONE", "Asia/Jerusalem"))
     ASK_DATETIME,          # single event
     ASK_DAYS,              # recurring
     ASK_TIME,              # recurring
-    ASK_START_DATE,        # recurring
-    ASK_END_DATE,          # recurring
     ASK_REMIND_BEFORE,
     ASK_SEND_TO,
     CONFIRM,
-) = range(12)
+) = range(10)
 
 # Hebrew day name → rrule weekday code
 DAYS_MAP = {
@@ -81,7 +79,8 @@ async def start_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Build keyboard with persona names
     buttons = [[p["name"] for p in personas]]
     await update.message.reply_text(
-        "➕ *הוספת אירוע חדש*\n\nעבור מי האירוע?",
+        "➕ *הוספת אירוע חדש*\n\nעבור מי האירוע?\n\n"
+        "_ניתן לבחור מספר אנשים בפסיקים: עלמה, ארבל_",
         reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True),
         parse_mode="Markdown",
     )
@@ -93,20 +92,41 @@ async def start_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Step 1: Persona ───────────────────────────────────────────────────────────
 
 async def received_persona(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text.strip()
-    if name in CANCEL_WORDS:
+    text = update.message.text.strip()
+    if text in CANCEL_WORDS:
         return await cancel(update, context)
 
     personas = context.user_data.get("personas", {})
-    if name not in personas:
-        await update.message.reply_text(f"לא מכיר את '{name}'. נסה שוב.")
+    
+    # Parse comma-separated names for multiple personas
+    names = [n.strip() for n in re.split(r"[,،]", text)]
+    selected_personas = {}
+    unknown = []
+    
+    for name in names:
+        if name in personas:
+            selected_personas[name] = personas[name]
+        else:
+            unknown.append(name)
+    
+    if not selected_personas:
+        await update.message.reply_text(
+            f"לא מכיר את {names}. נסה שוב.\n\n"
+            f"ניתן לבחור מס״פ אנשים בפסיקים, למשל: עלמה, ארבל"
+        )
         return ASK_PERSONA
-
-    context.user_data["persona_name"] = name
-    context.user_data["persona_id"] = personas[name]
-
+    
+    if unknown:
+        await update.message.reply_text(
+            f"⚠️ לא מכיר: {', '.join(unknown)}\n"
+            f"נמשיכים עם: {', '.join(selected_personas.keys())}"
+        )
+    
+    context.user_data["selected_personas"] = selected_personas
+    names_str = ", ".join(selected_personas.keys())
+    
     await update.message.reply_text(
-        f"מצוין! אירוע עבור *{name}*.\n\nמה שם הפעילות?",
+        f"מצוין! אירוע עבור *{names_str}*.\n\nמה שם הפעילות?",
         reply_markup=ReplyKeyboardRemove(),
         parse_mode="Markdown",
     )
@@ -248,51 +268,14 @@ async def received_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["rrule_hour"] = int(match.group(1))
     context.user_data["rrule_minute"] = int(match.group(2))
-
-    await update.message.reply_text(
-        "📅 מאיזה תאריך מתחיל? (לדוגמה: *01/09/2025*)",
-        parse_mode="Markdown",
-    )
-    return ASK_START_DATE
-
-
-# ── Step 5d: Recurring — start date ──────────────────────────────────────────
-
-async def received_start_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if text in CANCEL_WORDS:
-        return await cancel(update, context)
-
-    d = _parse_date(text)
-    if not d:
-        await update.message.reply_text("פורמט תאריך לא תקין. נסה: *01/09/2025*", parse_mode="Markdown")
-        return ASK_START_DATE
-
-    context.user_data["rrule_start"] = d
-    await update.message.reply_text(
-        "📅 עד מתי? (לדוגמה: *30/06/2026*)\n_(שלחו 'דלג' אם אין תאריך סיום)_",
-        parse_mode="Markdown",
-    )
-    return ASK_END_DATE
-
-
-# ── Step 5e: Recurring — end date ────────────────────────────────────────────
-
-async def received_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if text in CANCEL_WORDS:
-        return await cancel(update, context)
-
-    if text in ("דלג", "skip", "-"):
-        context.user_data["rrule_end"] = None
-    else:
-        d = _parse_date(text)
-        if not d:
-            await update.message.reply_text("פורמט תאריך לא תקין. נסה: *30/06/2026*", parse_mode="Markdown")
-            return ASK_END_DATE
-        context.user_data["rrule_end"] = d
+    
+    # Auto-set start date to today and no end date
+    context.user_data["rrule_start"] = date.today().isoformat()
+    context.user_data["rrule_end"] = None
 
     return await ask_remind_before(update, context)
+
+
 
 
 # ── Step 6: Remind before ─────────────────────────────────────────────────────
@@ -346,9 +329,12 @@ async def received_send_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = context.user_data
+    selected_personas = d.get("selected_personas", {})
+    personas_str = ", ".join(selected_personas.keys())
+    
     lines = [
         "✅ *סיכום האירוע — הכל נראה טוב?*\n",
-        f"👤 עבור: *{d['persona_name']}*",
+        f"👤 עבור: *{personas_str}*",
         f"📌 פעילות: *{d['title']}*",
     ]
     if d.get("location"):
@@ -358,9 +344,7 @@ async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         days_heb = {v: k for k, v in DAYS_MAP.items()}
         day_names = ", ".join(days_heb.get(c, c) for c in d.get("rrule_days", []))
         lines.append(f"🔁 חוזר: {day_names} בשעה {d['rrule_hour']:02d}:{d['rrule_minute']:02d}")
-        lines.append(f"📅 מתאריך: {d['rrule_start']}")
-        if d.get("rrule_end"):
-            lines.append(f"📅 עד: {d['rrule_end']}")
+        lines.append(f"📅 החל מ: {d['rrule_start']}")
     else:
         lines.append(f"📅 מועד: {d.get('event_datetime', '')}")
 
@@ -386,6 +370,7 @@ async def received_confirmation(update: Update, context: ContextTypes.DEFAULT_TY
         return await cancel(update, context)
 
     d = context.user_data
+    selected_personas = d.get("selected_personas", {})
 
     # Build rrule string if recurring
     rrule = None
@@ -393,20 +378,25 @@ async def received_confirmation(update: Update, context: ContextTypes.DEFAULT_TY
         byday = ",".join(d["rrule_days"])
         rrule = f"FREQ=WEEKLY;BYDAY={byday};BYHOUR={d['rrule_hour']};BYMINUTE={d['rrule_minute']}"
 
-    event_id = add_event(
-        title=d["title"],
-        persona_id=d["persona_id"],
-        location=d.get("location"),
-        event_datetime=d.get("event_datetime") if not d.get("is_recurring") else None,
-        rrule=rrule,
-        rrule_start=d.get("rrule_start"),
-        rrule_end=d.get("rrule_end"),
-        remind_before_minutes=d["remind_before"],
-        send_to=d["send_to"],
-    )
+    # Create event for each selected persona
+    event_ids = []
+    for persona_name, persona_id in selected_personas.items():
+        event_id = add_event(
+            title=d["title"],
+            persona_id=persona_id,
+            location=d.get("location"),
+            event_datetime=d.get("event_datetime") if not d.get("is_recurring") else None,
+            rrule=rrule,
+            rrule_start=d.get("rrule_start"),
+            rrule_end=d.get("rrule_end"),
+            remind_before_minutes=d["remind_before"],
+            send_to=d["send_to"],
+        )
+        event_ids.append(event_id)
 
+    personas_count = len(selected_personas)
     await update.message.reply_text(
-        f"✅ האירוע נשמר! (מזהה: {event_id})\n\n"
+        f"✅ {personas_count} אירוע{'ים' if personas_count != 1 else ''} נשמר{'ו' if personas_count != 1 else ''}!\n\n"
         f"תזכורת תישלח {d['remind_before']} דקות לפני הפעילות.",
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -475,8 +465,6 @@ def build_add_event_handler() -> ConversationHandler:
             ASK_DATETIME:      [MessageHandler(filters.TEXT & ~filters.COMMAND, received_datetime)],
             ASK_DAYS:          [MessageHandler(filters.TEXT & ~filters.COMMAND, received_days)],
             ASK_TIME:          [MessageHandler(filters.TEXT & ~filters.COMMAND, received_time)],
-            ASK_START_DATE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, received_start_date)],
-            ASK_END_DATE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, received_end_date)],
             ASK_REMIND_BEFORE: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_remind_before)],
             ASK_SEND_TO:       [MessageHandler(filters.TEXT & ~filters.COMMAND, received_send_to)],
             CONFIRM:           [MessageHandler(filters.TEXT & ~filters.COMMAND, received_confirmation)],

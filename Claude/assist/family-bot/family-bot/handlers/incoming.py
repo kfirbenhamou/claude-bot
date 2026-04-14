@@ -72,12 +72,15 @@ async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         [InlineKeyboardButton("הצג הכל", callback_data="show_all")]
     )
     keyboard.append(
+        [InlineKeyboardButton("📅 סיכום יום", callback_data="daily_summary")]
+    )
+    keyboard.append(
         [InlineKeyboardButton("הוסף אירוע", callback_data="add_event")]
     )
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🎯 בחרו אפשרות:",
+        "🎯 בחרו אפשרות:\nניתן גם לכתוב יומי לסיכום היום (טקסט + קול).",
         reply_markup=reply_markup
     )
 
@@ -88,6 +91,15 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 # ── Show/Display handlers ───────────────────────────────────────────────────────
+
+async def handle_daily_summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Help menu: 📅 סיכום יום — same text + voice as the 8:00 morning summary."""
+    query = update.callback_query
+    await query.answer()
+    from services.scheduler import send_daily_summary_to_chat
+
+    await send_daily_summary_to_chat(context.bot, query.message.chat_id)
+
 
 async def handle_show_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle inline button clicks for show commands."""
@@ -566,6 +578,23 @@ def _try_handle_show_request(text: str, update: Update) -> str:
     return None
 
 
+_DAILY_SUMMARY_TRIGGERS = frozenset({"יומי", "סיכום יומי", "תכנית היום"})
+
+
+def _normalize_daily_summary_trigger(text: str) -> str:
+    """Strip whitespace and stray Hebrew/ASCII quotes (e.g. יומי״ → יומי)."""
+    s = (text or "").strip()
+    while s and s[0] in "\"'״׳":
+        s = s[1:].lstrip()
+    while s and s[-1] in "\"'״׳":
+        s = s[:-1].rstrip()
+    return s.strip()
+
+
+def _is_daily_summary_command(text: str) -> bool:
+    return _normalize_daily_summary_trigger(text) in _DAILY_SUMMARY_TRIGGERS
+
+
 # ── Incoming reply handler ────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -644,6 +673,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "ביטול":
         context.user_data.clear()
         await msg.reply_text("ביטלתי את הפעולה הנוכחית. ✓")
+        return
+
+    if _is_daily_summary_command(text):
+        from services.scheduler import send_daily_summary_to_chat
+
+        await send_daily_summary_to_chat(context.bot, msg.chat_id)
         return
 
     # ── Edit event field input ─────────────────────────────────────────────────

@@ -12,7 +12,7 @@ import io
 from telegram import Bot, InputFile
 from dotenv import load_dotenv
 
-from db.queries import get_all_active_events, is_occurrence_skipped
+from db.queries import get_all_active_events, get_all_personas, is_occurrence_skipped
 from services.reminder import send_reminder
 
 load_dotenv()
@@ -163,48 +163,47 @@ def _is_due(
     return (now - reminder_time).total_seconds() <= late_window_seconds
 
 
-async def send_daily_summary(bot: Bot):
-    """Send daily summary of all events for today to the group chat (text + listenable TTS)."""
-    now = datetime.now(TZ)
-    today = now.date()
-    logger.info(f"[scheduler] שולח סיכום יומי — {today.strftime('%d/%m/%Y')}")
-    
+def _collect_today_events(today: date) -> list:
+    """All active events that occur on `today` (TZ calendar day), sorted by time."""
     from db.queries import get_all_personas
-    
+
     personas = {p["id"]: p["name"] for p in get_all_personas()}
     events = get_all_active_events()
-    
     today_events = []
-    
+
     for e in events:
         if e["is_recurring"] and e["rrule"] and e["rrule_start"]:
             try:
                 rrule_start_str = e["rrule_start"]
                 if isinstance(rrule_start_str, str):
-                    if len(rrule_start_str) == 10 and rrule_start_str[4] == '-':
+                    if len(rrule_start_str) == 10 and rrule_start_str[4] == "-":
                         rrule_start_str = rrule_start_str + " 00:00:00"
-                
+
                 dtstart = _ensure_aware(datetime.fromisoformat(rrule_start_str))
-                
+
                 if dtstart.tzinfo != TZ:
                     dtstart = dtstart.astimezone(TZ)
-                
+
                 rrule_str = f"RRULE:{e['rrule']}"
                 rule = rrulestr(rrule_str, ignoretz=False, dtstart=dtstart)
-                
+
                 day_start = TZ.localize(datetime.combine(today, datetime.min.time()))
                 day_end = TZ.localize(datetime.combine(today, datetime.max.time()))
                 occs = rule.between(day_start, day_end, inc=True)
-                
+
                 for occ in occs:
-                    today_events.append({
-                        "event": e,
-                        "persona_name": personas.get(e["persona_id"], "?"),
-                        "datetime": occ if isinstance(occ, datetime) else datetime.combine(occ, datetime.min.time())
-                    })
+                    today_events.append(
+                        {
+                            "event": e,
+                            "persona_name": personas.get(e["persona_id"], "?"),
+                            "datetime": occ
+                            if isinstance(occ, datetime)
+                            else datetime.combine(occ, datetime.min.time()),
+                        }
+                    )
             except Exception as exc:
                 logger.error(f"[scheduler] שגיאה בעיבוד אירוע חוזר {e['id']}: {exc}")
-        
+
         elif e["event_datetime"]:
             try:
                 dt = datetime.fromisoformat(e["event_datetime"])
@@ -212,24 +211,27 @@ async def send_daily_summary(bot: Bot):
                     dt = TZ.localize(dt)
                 elif dt.tzinfo != TZ:
                     dt = dt.astimezone(TZ)
-                
+
                 if dt.date() == today:
-                    today_events.append({
-                        "event": e,
-                        "persona_name": personas.get(e["persona_id"], "?"),
-                        "datetime": dt
-                    })
+                    today_events.append(
+                        {
+                            "event": e,
+                            "persona_name": personas.get(e["persona_id"], "?"),
+                            "datetime": dt,
+                        }
+                    )
             except Exception as exc:
                 logger.error(f"[scheduler] שגיאה בעיבוד אירוע {e['id']}: {exc}")
-    
-    # Sort events by time
+
     today_events.sort(key=lambda x: x["datetime"])
+    return today_events
 
-    GROUP_CHAT_ID = int(os.getenv("FAMILY_GROUP_CHAT_ID", "0"))
-    if not GROUP_CHAT_ID:
-        logger.error("[scheduler] FAMILY_GROUP_CHAT_ID לא מוגדר — מדלג על סיכום יומי")
-        return
 
+def build_daily_summary_message_and_spoken(today: date) -> tuple[str, str, int]:
+    """
+    Same content as the 8:00 morning job: Markdown message, Hebrew TTS script, event count.
+    """
+    today_events = _collect_today_events(today)
     date_label = today.strftime("%d/%m/%Y")
 
     if not today_events:
@@ -260,18 +262,27 @@ async def send_daily_summary(bot: Bot):
         message = "\n".join(lines)
         spoken = " ".join(spoken_parts)
 
+    return message, spoken, len(today_events)
+
+
+async def send_daily_summary_to_chat(bot: Bot, chat_id: int) -> bool:
+    """
+    Post today's schedule to any chat: Markdown text + voice reply (same as morning job).
+    Returns True if the text message was sent successfully.
+    """
+    today = datetime.now(TZ).date()
+    message, spoken, n_events = build_daily_summary_message_and_spoken(today)
+
     try:
         msg = await bot.send_message(
-            chat_id=GROUP_CHAT_ID,
+            chat_id=chat_id,
             text=message,
             parse_mode="Markdown",
         )
-        logger.info(
-            f"[scheduler] סיכום יומי נשלח (טקסט) — {len(today_events)} אירועים"
-        )
+        logger.info(f"[daily_summary] נשלח לצ'אט {chat_id} (טקסט) — {n_events} אירועים")
     except Exception as e:
-        logger.error(f"[scheduler] שגיאה בשליחת סיכום יומי: {e}")
-        return
+        logger.error(f"[daily_summary] שגיאה בשליחת טקסט לצ'אט {chat_id}: {e}")
+        return False
 
     try:
         from services.tts import generate_daily_summary_audio
@@ -279,12 +290,27 @@ async def send_daily_summary(bot: Bot):
         audio_bytes = generate_daily_summary_audio(spoken)
         if audio_bytes:
             await bot.send_voice(
-                chat_id=GROUP_CHAT_ID,
+                chat_id=chat_id,
                 voice=InputFile(io.BytesIO(audio_bytes), filename="daily_summary.ogg"),
                 reply_to_message_id=msg.message_id,
             )
-            logger.info("[scheduler] סיכום יומי — הוקלט גם כהודעת קול")
+            logger.info(f"[daily_summary] נשלח אודיו לצ'אט {chat_id}")
         else:
-            logger.warning("[scheduler] סיכום יומי — לא נוצר אודיו (ממשיכים בטקסט בלבד)")
+            logger.warning("[daily_summary] לא נוצר אודיו (ממשיכים בטקסט בלבד)")
     except Exception as e:
-        logger.error(f"[scheduler] שגיאה בשליחת אודיו לסיכום יומי: {e}")
+        logger.error(f"[daily_summary] שגיאה בשליחת אודיו: {e}")
+
+    return True
+
+
+async def send_daily_summary(bot: Bot):
+    """Scheduled 8:00 job: send today's summary to the family group."""
+    today = datetime.now(TZ).date()
+    logger.info(f"[scheduler] שולח סיכום יומי — {today.strftime('%d/%m/%Y')}")
+
+    group_id = int(os.getenv("FAMILY_GROUP_CHAT_ID", "0"))
+    if not group_id:
+        logger.error("[scheduler] FAMILY_GROUP_CHAT_ID לא מוגדר — מדלג על סיכום יומי")
+        return
+
+    await send_daily_summary_to_chat(bot, group_id)

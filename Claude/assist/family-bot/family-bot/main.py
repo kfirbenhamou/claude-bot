@@ -25,6 +25,7 @@ from handlers.incoming import (
     handle_help,
     handle_show,
     handle_show_callback,
+    handle_daily_summary_callback,
     handle_event_action_callback,
     handle_qa_exit_callback,
     handle_event_edit_callback,
@@ -104,6 +105,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_qa_exit_callback, pattern="^qa_exit$"))
     
     # Help/show menu callbacks
+    app.add_handler(CallbackQueryHandler(handle_daily_summary_callback, pattern="^daily_summary$"))
     app.add_handler(CallbackQueryHandler(handle_show_callback))
     app.add_handler(build_add_event_handler())
     app.add_handler(MessageHandler(
@@ -139,7 +141,7 @@ def main():
 
     logger.info("🤖 Family bot starting...")
     logger.info("👨‍👩‍👧‍👦 Personas: כפיר, מורן, עלמה, ארבל")
-    logger.info("💬 Commands: /start, עזרה, הוסף אירוע, ביטול")
+    logger.info("💬 Commands: /start, עזרה, יומי, הוסף אירוע, ביטול")
 
     app.run_polling(drop_pending_updates=True)
 

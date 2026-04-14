@@ -6,7 +6,7 @@ Handles all incoming Telegram messages.
 import os
 from datetime import datetime, date, time, timedelta
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import ContextTypes, CallbackQueryHandler
 from dotenv import load_dotenv
 from dateutil.rrule import rrulestr
@@ -1033,10 +1033,11 @@ async def handle_event_tts_callback(update: Update, context: ContextTypes.DEFAUL
         await query.message.reply_text("❌ לא הצלחתי לייצר אודיו כרגע. נסו שוב.")
         return
 
+    # Reply under the event card, no caption — audio is the event briefing only.
     await query.message._bot.send_voice(
         chat_id=query.message.chat_id,
-        voice=io.BytesIO(audio_bytes),
-        caption=f"🔊 {event['title']} — {persona_name}",
+        voice=InputFile(io.BytesIO(audio_bytes), filename="event.ogg"),
+        reply_to_message_id=query.message.message_id,
     )
 
 

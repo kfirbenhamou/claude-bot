@@ -7,7 +7,9 @@ import logging
 import pytz
 from datetime import datetime, timedelta, date
 from dateutil.rrule import rrulestr
-from telegram import Bot
+import io
+
+from telegram import Bot, InputFile
 from dotenv import load_dotenv
 
 from db.queries import get_all_active_events, is_occurrence_skipped
@@ -162,9 +164,9 @@ def _is_due(
 
 
 async def send_daily_summary(bot: Bot):
-    """Send daily summary of all events for today to the group chat."""
+    """Send daily summary of all events for today to the group chat (text + listenable TTS)."""
     now = datetime.now(TZ)
-    today = date.today()
+    today = now.date()
     logger.info(f"[scheduler] שולח סיכום יומי — {today.strftime('%d/%m/%Y')}")
     
     from db.queries import get_all_personas
@@ -220,36 +222,69 @@ async def send_daily_summary(bot: Bot):
             except Exception as exc:
                 logger.error(f"[scheduler] שגיאה בעיבוד אירוע {e['id']}: {exc}")
     
-    if not today_events:
-        logger.info(f"[scheduler] אין אירועים להיום {today.strftime('%d/%m/%Y')}")
-        return
-    
     # Sort events by time
     today_events.sort(key=lambda x: x["datetime"])
-    
-    # Build summary message
+
     GROUP_CHAT_ID = int(os.getenv("FAMILY_GROUP_CHAT_ID", "0"))
-    
-    lines = [f"📅 *תכנית היום — {today.strftime('%d/%m/%Y')}*"]
-    lines.append("")
-    
-    for item in today_events:
-        e = item["event"]
-        name = item["persona_name"]
-        dt = item["datetime"]
-        time_str = dt.strftime("%H:%M")
-        location_str = f" • {e['location']}" if e.get("location") else ""
-        title = e["title"]
-        lines.append(f"🕐 {time_str} — *{name}* | {title}{location_str}")
-    
-    message = "\n".join(lines)
-    
+    if not GROUP_CHAT_ID:
+        logger.error("[scheduler] FAMILY_GROUP_CHAT_ID לא מוגדר — מדלג על סיכום יומי")
+        return
+
+    date_label = today.strftime("%d/%m/%Y")
+
+    if not today_events:
+        message = f"📅 *תכנית היום — {date_label}*\n\nאין אירועים מתוזמנים."
+        spoken = f"תכנית היום לתאריך {date_label}. אין אירועים מתוזמנים ביומן."
+    else:
+        lines = [f"📅 *תכנית היום — {date_label}*", ""]
+        spoken_parts = [f"תכנית היום לתאריך {date_label}."]
+
+        for item in today_events:
+            e = item["event"]
+            name = item["persona_name"]
+            dt = item["datetime"]
+            if isinstance(dt, datetime):
+                occ_dt = _ensure_aware(dt)
+            else:
+                occ_dt = _ensure_aware(datetime.combine(dt, datetime.min.time()))
+            time_str = occ_dt.strftime("%H:%M")
+            location_str = f" • {e['location']}" if e.get("location") else ""
+            title = e["title"]
+            lines.append(f"🕐 {time_str} — *{name}* | {title}{location_str}")
+
+            seg = f"בשעה {time_str}, {name}, {title}."
+            if e.get("location"):
+                seg += f" מיקום {e['location']}."
+            spoken_parts.append(seg)
+
+        message = "\n".join(lines)
+        spoken = " ".join(spoken_parts)
+
     try:
-        await bot.send_message(
+        msg = await bot.send_message(
             chat_id=GROUP_CHAT_ID,
             text=message,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
-        logger.info(f"[scheduler] סיכום יומי נשלח בהצלחה ({len(today_events)} אירועים)")
+        logger.info(
+            f"[scheduler] סיכום יומי נשלח (טקסט) — {len(today_events)} אירועים"
+        )
     except Exception as e:
         logger.error(f"[scheduler] שגיאה בשליחת סיכום יומי: {e}")
+        return
+
+    try:
+        from services.tts import generate_daily_summary_audio
+
+        audio_bytes = generate_daily_summary_audio(spoken)
+        if audio_bytes:
+            await bot.send_voice(
+                chat_id=GROUP_CHAT_ID,
+                voice=InputFile(io.BytesIO(audio_bytes), filename="daily_summary.ogg"),
+                reply_to_message_id=msg.message_id,
+            )
+            logger.info("[scheduler] סיכום יומי — הוקלט גם כהודעת קול")
+        else:
+            logger.warning("[scheduler] סיכום יומי — לא נוצר אודיו (ממשיכים בטקסט בלבד)")
+    except Exception as e:
+        logger.error(f"[scheduler] שגיאה בשליחת אודיו לסיכום יומי: {e}")

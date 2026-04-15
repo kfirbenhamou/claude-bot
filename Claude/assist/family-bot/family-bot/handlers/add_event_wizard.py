@@ -32,10 +32,30 @@ import re
 import os
 from dotenv import load_dotenv
 
-from db.queries import get_all_personas, add_event
+import logging
+
+from db.queries import get_all_personas, add_event, get_event_by_id, get_persona_by_id, set_gcal_event_id
 
 load_dotenv(override=True)
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Asia/Jerusalem"))
+
+logger = logging.getLogger(__name__)
+
+
+def _gcal_create(event_id: int) -> None:
+    """Fire-and-forget: push a newly created event to Google Calendar."""
+    try:
+        from services.gcal import create_gcal_event
+        event = get_event_by_id(event_id)
+        if not event:
+            return
+        persona = get_persona_by_id(event["persona_id"])
+        persona_name = persona["name"] if persona else "משפחה"
+        gcal_id = create_gcal_event(event, persona_name)
+        if gcal_id:
+            set_gcal_event_id(event_id, gcal_id)
+    except Exception as exc:
+        logger.warning(f"[gcal] wizard create failed for event {event_id}: {exc}")
 
 # ── Conversation states ───────────────────────────────────────────────────────
 (
@@ -393,6 +413,7 @@ async def received_confirmation(update: Update, context: ContextTypes.DEFAULT_TY
             send_to=d["send_to"],
         )
         event_ids.append(event_id)
+        _gcal_create(event_id)
 
     personas_count = len(selected_personas)
     await update.message.reply_text(

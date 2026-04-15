@@ -62,6 +62,9 @@ def setup():
             -- 'group', 'private', 'both'
             send_to                 TEXT DEFAULT 'both',
 
+            -- Google Calendar event ID (null until synced)
+            gcal_event_id           TEXT,
+
             active                  BOOLEAN DEFAULT TRUE,
             created_at              DATETIME DEFAULT CURRENT_TIMESTAMP
         );

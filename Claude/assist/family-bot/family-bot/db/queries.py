@@ -15,7 +15,19 @@ DB_PATH = os.getenv("DB_PATH", "family_bot.db")
 def _conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row  # access columns by name
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply lightweight schema migrations for columns added after initial setup."""
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(events)").fetchall()
+    }
+    if "gcal_event_id" not in existing:
+        conn.execute("ALTER TABLE events ADD COLUMN gcal_event_id TEXT")
+        conn.commit()
 
 
 def _ensure_agent_state_tables(conn: sqlite3.Connection) -> None:
@@ -240,6 +252,27 @@ def clear_all_agent_pending() -> int:
         cur = conn.execute("DELETE FROM agent_pending")
         conn.commit()
         return cur.rowcount
+
+def get_gcal_event_id(event_id: int) -> str | None:
+    """Returns the Google Calendar event ID stored for this event, or None."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT gcal_event_id FROM events WHERE id = ?", (event_id,)
+        ).fetchone()
+        if row:
+            return row["gcal_event_id"]
+        return None
+
+
+def set_gcal_event_id(event_id: int, gcal_event_id: str) -> None:
+    """Stores the Google Calendar event ID after a successful sync."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE events SET gcal_event_id = ? WHERE id = ?",
+            (gcal_event_id, event_id),
+        )
+        conn.commit()
+
 
 def delete_event(event_id: int) -> None:
     """

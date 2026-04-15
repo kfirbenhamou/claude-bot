@@ -3,6 +3,7 @@ handlers/incoming.py
 Handles all incoming Telegram messages.
 """
 
+import logging
 import os
 from datetime import datetime, date, time, timedelta
 import pytz
@@ -22,6 +23,8 @@ from db.queries import (
     mark_occurrence_handled,
     get_event_by_id,
     get_persona_by_id,
+    get_gcal_event_id,
+    set_gcal_event_id,
 )
 from handlers.intent import detect_intent
 from handlers.qa import answer_event_question
@@ -30,6 +33,43 @@ from utils.formatting import confirmation_message, format_datetime_hebrew, get_e
 load_dotenv()
 GROUP_CHAT_ID = int(os.getenv("FAMILY_GROUP_CHAT_ID", "0"))
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Asia/Jerusalem"))
+
+logger = logging.getLogger(__name__)
+
+
+def _sync_event_to_gcal(event_id: int) -> None:
+    """
+    Fire-and-forget Google Calendar sync for a single event.
+    Creates a new GCal event if none exists yet; updates if one does.
+    Silently skips if token.json is not configured.
+    """
+    try:
+        from services.gcal import create_gcal_event, update_gcal_event
+        event = get_event_by_id(event_id)
+        if not event:
+            return
+        persona = get_persona_by_id(event["persona_id"])
+        persona_name = persona["name"] if persona else "משפחה"
+        gcal_id = get_gcal_event_id(event_id)
+        if gcal_id:
+            update_gcal_event(gcal_id, event, persona_name)
+        else:
+            new_gcal_id = create_gcal_event(event, persona_name)
+            if new_gcal_id:
+                set_gcal_event_id(event_id, new_gcal_id)
+    except Exception as exc:
+        logger.warning(f"[gcal] _sync_event_to_gcal({event_id}) failed: {exc}")
+
+
+def _delete_gcal_event_for(event_id: int) -> None:
+    """Fire-and-forget Google Calendar deletion for a single event."""
+    try:
+        from services.gcal import delete_gcal_event
+        gcal_id = get_gcal_event_id(event_id)
+        if gcal_id:
+            delete_gcal_event(gcal_id)
+    except Exception as exc:
+        logger.warning(f"[gcal] _delete_gcal_event_for({event_id}) failed: {exc}")
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -1091,6 +1131,7 @@ async def handle_confirm_remove_callback(update: Update, context: ContextTypes.D
     event = get_event_by_id(event_id)
     
     if event:
+        _delete_gcal_event_for(event_id)
         update_event(event_id, active=False)
         await query.edit_message_text(f"✅ \"{ event['title']}\" הסר בהצלחה.")
     else:
@@ -1282,10 +1323,12 @@ async def _handle_edit_field_input(update: Update, context: ContextTypes.DEFAULT
         # ── Regular field edits ────────────────────────────────────────────────
         if field == "title":
             update_event(event_id, title=new_value)
+            _sync_event_to_gcal(event_id)
             await msg.reply_text(f"✅ כותרת עודכנה ל: {new_value}")
         
         elif field == "location":
             update_event(event_id, location=new_value)
+            _sync_event_to_gcal(event_id)
             await msg.reply_text(f"✅ מיקום עודכן ל: {new_value}")
         
         elif field == "reminder":
@@ -1500,6 +1543,7 @@ async def handle_datetime_recurring_callback(update: Update, context: ContextTyp
                 rrule_start=today,
                 event_datetime=None
             )
+            _sync_event_to_gcal(event_id)
             
             await query.edit_message_text(
                 f"✅ אירוע עודכן כחוזר:\n"
@@ -1529,6 +1573,7 @@ async def handle_datetime_recurring_callback(update: Update, context: ContextTyp
             full_datetime = f"{event_date.isoformat()} {start_time}"
             
             update_event(event_id, event_datetime=full_datetime, is_recurring=False, rrule=None, rrule_start=None)
+            _sync_event_to_gcal(event_id)
             
             await query.edit_message_text(
                 f"✅ זמן עודכן:\n"
@@ -1588,6 +1633,7 @@ async def handle_rrule_preset_callback(update: Update, context: ContextTypes.DEF
             rrule_start=day,
             event_datetime=None
         )
+        _sync_event_to_gcal(event_id)
         
         await query.edit_message_text(f"✅ אירוע עודכן כחוזר:\n• התחלה: {day}\n• חוזר: {rrule_type}")
         context.user_data.pop("edit_event_state", None)
@@ -1650,6 +1696,7 @@ async def handle_edit_recurring_callback(update: Update, context: ContextTypes.D
                     rrule_start=start_date,
                     event_datetime=None
                 )
+                _sync_event_to_gcal(event_id)
                 await query.edit_message_text(
                     f"✅ אירוע עודכן:\n"
                     f"• סטטוס: חוזר מדי שבוע\n"
@@ -1669,6 +1716,7 @@ async def handle_edit_recurring_callback(update: Update, context: ContextTypes.D
                 rrule_start=None,
                 event_datetime=event.get("event_datetime")
             )
+            _sync_event_to_gcal(event_id)
             await query.edit_message_text("✅ אירוע עודכן:\n• סטטוס: חד-פעמי")
         
         context.user_data.pop("edit_event_state", None)

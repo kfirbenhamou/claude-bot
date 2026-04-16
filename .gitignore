@@ -48,3 +48,5 @@ logs/
 
 # Security
 key.txt
+credentials.json
+token.json

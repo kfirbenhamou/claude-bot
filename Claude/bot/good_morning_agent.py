@@ -1,13 +1,18 @@
 import os
+import ssl
 import requests
 import logging
 import sys
 import re
 import random
+import urllib3
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
+import httpx
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ── Load environment variables ─────────────────────────────────
 load_dotenv()
@@ -51,7 +56,7 @@ log = logging.getLogger(__name__)
 def validate_url(url: str, timeout: int = 5) -> bool:
     """Return True if the URL is reachable."""
     try:
-        response = requests.head(url, timeout=timeout, allow_redirects=True)
+        response = requests.head(url, timeout=timeout, allow_redirects=True, verify=False)
         valid = response.status_code < 400
         if not valid:
             log.warning(f"URL validation failed [{response.status_code}]: {url}")
@@ -90,7 +95,7 @@ def fetch_youtube_song() -> str | None:
             "safeSearch": "strict",
             "key":        YOUTUBE_API_KEY,
         }
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=10, verify=False)
         response.raise_for_status()
 
         items = response.json().get("items", [])
@@ -123,7 +128,7 @@ def fetch_youtube_song() -> str | None:
 
 def generate_morning_message(name: str) -> str:
     """Ask GPT-4o mini to write a warm, personalised Hebrew good morning message."""
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=OPENAI_API_KEY, http_client=httpx.Client(verify=False))
     today  = datetime.now().strftime("%A, %B %d")
 
     prompt = (
@@ -147,12 +152,9 @@ def generate_morning_message(name: str) -> str:
 
 def send_telegram_message(chat_id: str, text: str) -> bool:
     """Send a text message via the Telegram Bot API."""
-    if not validate_url("https://api.telegram.org"):
-        log.error("Telegram API is unreachable.")
-        return False
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        response = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
+        response = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=15, verify=False)
         if not response.ok:
             log.error(f"Telegram error {response.status_code}: {response.text}")
         return response.ok

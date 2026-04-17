@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 handlers/qa.py
 Answers free-text questions about an event using OpenAI.

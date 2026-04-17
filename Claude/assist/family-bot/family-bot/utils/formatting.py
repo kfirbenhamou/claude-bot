@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 utils/formatting.py
 Hebrew message templates and @tag helpers.

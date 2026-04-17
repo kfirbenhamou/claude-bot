@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 handlers/intent.py
 Uses OpenAI to understand free-text Hebrew replies.

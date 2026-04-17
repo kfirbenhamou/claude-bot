@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 main.py
 Entry point. Starts the Telegram bot and the scheduler.

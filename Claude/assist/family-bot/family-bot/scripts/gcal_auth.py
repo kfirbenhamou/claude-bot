@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 scripts/gcal_auth.py
 One-time Google Calendar OAuth2 setup.

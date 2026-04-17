@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 services/reminder.py
 Sends reminders to the group and/or privately.

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 scripts/gcal_sync_existing.py
 One-time migration: push all existing DB events to Google Calendar.

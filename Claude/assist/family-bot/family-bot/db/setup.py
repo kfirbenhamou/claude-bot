@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 db/setup.py
 Run once: python db/setup.py

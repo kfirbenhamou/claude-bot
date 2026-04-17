@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 add_events_example.py
 Run this to populate your first events.

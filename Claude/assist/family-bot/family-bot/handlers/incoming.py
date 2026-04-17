@@ -1101,6 +1101,23 @@ async def _snooze_inline_callback(context: ContextTypes.DEFAULT_TYPE):
 
 # ── Event Management Callbacks (Edit, Remove, Add Reminder) ──────────────────
 
+def _build_edit_menu(event_id: int, note: str = "") -> tuple:
+    """Returns (text, InlineKeyboardMarkup) for the edit field selection menu."""
+    event = get_event_by_id(event_id)
+    title = event["title"] if event else str(event_id)
+    keyboard = [
+        [InlineKeyboardButton("📝 כותרת", callback_data=f"edit_field:title:{event_id}")],
+        [InlineKeyboardButton("📍 מיקום", callback_data=f"edit_field:location:{event_id}")],
+        [InlineKeyboardButton("⏰ זמן", callback_data=f"edit_field:datetime:{event_id}")],
+        [InlineKeyboardButton("🔁 חוזר", callback_data=f"edit_field:recurring:{event_id}")],
+        [InlineKeyboardButton("🔔 זמן תזכורת", callback_data=f"edit_field:reminder:{event_id}")],
+        [InlineKeyboardButton("✅ סיום עריכה", callback_data="cancel_edit")],
+    ]
+    prefix = f"✔️ {note}\n\n" if note else ""
+    text = f"{prefix}✏️ עריכת {title}\n\nבחרו שדה לעריכה:"
+    return text, InlineKeyboardMarkup(keyboard)
+
+
 async def handle_event_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle edit button click for an event."""
     query = update.callback_query
@@ -1117,27 +1134,13 @@ async def handle_event_edit_callback(update: Update, context: ContextTypes.DEFAU
         await query.edit_message_text("אולם אירוע זה לא נמצא.")
         return
     
-    # Initialize edit flow state
     context.user_data["edit_event_state"] = {
         "event_id": event_id,
-        "step": "choose_field",  # choose_field, editing_title, editing_datetime, etc.
+        "step": "choose_field",
     }
     
-    # Show field selection menu
-    keyboard = [
-        [InlineKeyboardButton("📝 כותרת", callback_data=f"edit_field:title:{event_id}")],
-        [InlineKeyboardButton("📍 מיקום", callback_data=f"edit_field:location:{event_id}")],
-        [InlineKeyboardButton("⏰ זמן", callback_data=f"edit_field:datetime:{event_id}")],
-        [InlineKeyboardButton("� חוזר", callback_data=f"edit_field:recurring:{event_id}")],
-        [InlineKeyboardButton("�🔔 זמן תזכורת", callback_data=f"edit_field:reminder:{event_id}")],
-        [InlineKeyboardButton("ביטול", callback_data="cancel_edit")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"✏️ עריכת {event['title']}\n\nבחרו שדה לעריכה:",
-        reply_markup=reply_markup
-    )
+    text, reply_markup = _build_edit_menu(event_id)
+    await query.edit_message_text(text, reply_markup=reply_markup)
 
 
 async def handle_event_remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1420,7 +1423,7 @@ async def handle_cancel_edit_callback(update: Update, context: ContextTypes.DEFA
     await query.answer()
     
     context.user_data.pop("edit_event_state", None)
-    await query.edit_message_text("✓ ביטלתי את העריכה.")
+    await query.edit_message_text("✅ העריכה הושלמה. השינויים נשמרו.")
 
 
 async def handle_cancel_remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1455,12 +1458,12 @@ async def _handle_edit_field_input(update: Update, context: ContextTypes.DEFAULT
         if field == "title":
             update_event(event_id, title=new_value)
             _sync_event_to_gcal(event_id)
-            await msg.reply_text(f"✅ כותרת עודכנה ל: {new_value}")
+            note = f"כותרת עודכנה ל: {new_value}"
         
         elif field == "location":
             update_event(event_id, location=new_value)
             _sync_event_to_gcal(event_id)
-            await msg.reply_text(f"✅ מיקום עודכן ל: {new_value}")
+            note = f"מיקום עודכן ל: {new_value}"
         
         elif field == "reminder":
             try:
@@ -1468,7 +1471,7 @@ async def _handle_edit_field_input(update: Update, context: ContextTypes.DEFAULT
                 if minutes < 0:
                     raise ValueError("חייב להיות מספר חיובי")
                 update_event(event_id, remind_before_minutes=minutes)
-                await msg.reply_text(f"✅ תזכורת עודכנה ל: {minutes} דקות לפני היום")
+                note = f"תזכורת עודכנה ל: {minutes} דקות לפני"
             except ValueError:
                 await msg.reply_text("❌ זמן תזכורת חייב להיות מספר חיובי (בדקות).")
                 return
@@ -1477,8 +1480,10 @@ async def _handle_edit_field_input(update: Update, context: ContextTypes.DEFAULT
             await msg.reply_text("❌ שדה לא חוקי.")
             return
         
-        # Clean up state after successful edit
-        context.user_data.pop("edit_event_state", None)
+        # Keep state alive and return to edit menu
+        context.user_data["edit_event_state"] = {"event_id": event_id, "step": "choose_field"}
+        text, reply_markup = _build_edit_menu(event_id, note=note)
+        await msg.reply_text(text, reply_markup=reply_markup)
         
     except Exception as e:
         await msg.reply_text(f"❌ שגיאה בעדכון: {str(e)}")
@@ -1675,12 +1680,8 @@ async def handle_datetime_recurring_callback(update: Update, context: ContextTyp
                 event_datetime=None
             )
             _sync_event_to_gcal(event_id)
-            
-            await query.edit_message_text(
-                f"✅ אירוע עודכן כחוזר:\n"
-                f"• יום: {day_name}\n"
-                f"• שעות: {start_time}-{end_time}"
-            )
+            text, reply_markup = _build_edit_menu(event_id, note=f"זמן עודכן כחוזר: {day_name} {start_time}-{end_time}")
+            await query.edit_message_text(text, reply_markup=reply_markup)
         else:
             # Single event - need to pick a specific date
             # For now, use next occurrence of this day
@@ -1705,14 +1706,10 @@ async def handle_datetime_recurring_callback(update: Update, context: ContextTyp
             
             update_event(event_id, event_datetime=full_datetime, is_recurring=False, rrule=None, rrule_start=None)
             _sync_event_to_gcal(event_id)
-            
-            await query.edit_message_text(
-                f"✅ זמן עודכן:\n"
-                f"• תאריך: {event_date.strftime('%d/%m/%Y')}\n"
-                f"• שעות: {start_time}-{end_time}"
-            )
+            text, reply_markup = _build_edit_menu(event_id, note=f"זמן עודכן: {event_date.strftime('%d/%m/%Y')} {start_time}-{end_time}")
+            await query.edit_message_text(text, reply_markup=reply_markup)
         
-        context.user_data.pop("edit_event_state", None)
+        context.user_data["edit_event_state"] = {"event_id": event_id, "step": "choose_field"}
     
     except Exception as e:
         await query.edit_message_text(f"❌ שגיאה בעדכון: {str(e)}")
@@ -1765,9 +1762,9 @@ async def handle_rrule_preset_callback(update: Update, context: ContextTypes.DEF
             event_datetime=None
         )
         _sync_event_to_gcal(event_id)
-        
-        await query.edit_message_text(f"✅ אירוע עודכן כחוזר:\n• התחלה: {day}\n• חוזר: {rrule_type}")
-        context.user_data.pop("edit_event_state", None)
+        context.user_data["edit_event_state"] = {"event_id": event_id, "step": "choose_field"}
+        text, reply_markup = _build_edit_menu(event_id, note=f"חזרה עודכנה: {rrule_type}")
+        await query.edit_message_text(text, reply_markup=reply_markup)
     
     except Exception as e:
         await query.edit_message_text(f"❌ שגיאה בעדכון: {str(e)}")
@@ -1828,18 +1825,14 @@ async def handle_edit_recurring_callback(update: Update, context: ContextTypes.D
                     event_datetime=None
                 )
                 _sync_event_to_gcal(event_id)
-                await query.edit_message_text(
-                    f"✅ אירוע עודכן:\n"
-                    f"• סטטוס: חוזר מדי שבוע\n"
-                    f"• יום: {day_name}\n"
-                    f"• שעה: {hour:02d}:{minute:02d}"
-                )
+                context.user_data["edit_event_state"] = {"event_id": event_id, "step": "choose_field"}
+                text, reply_markup = _build_edit_menu(event_id, note=f"עודכן לחוזר: {day_name} {hour:02d}:{minute:02d}")
+                await query.edit_message_text(text, reply_markup=reply_markup)
             else:
-                # Event already recurring, no changes needed
-                await query.edit_message_text("✓ אירוע זה כבר חוזר.")
+                text, reply_markup = _build_edit_menu(event_id, note="אירוע זה כבר חוזר")
+                await query.edit_message_text(text, reply_markup=reply_markup)
         else:
             # Switch to one-time event
-            # Clear the rrule data
             update_event(
                 event_id,
                 is_recurring=False,
@@ -1848,7 +1841,9 @@ async def handle_edit_recurring_callback(update: Update, context: ContextTypes.D
                 event_datetime=event.get("event_datetime")
             )
             _sync_event_to_gcal(event_id)
-            await query.edit_message_text("✅ אירוע עודכן:\n• סטטוס: חד-פעמי")
+            context.user_data["edit_event_state"] = {"event_id": event_id, "step": "choose_field"}
+            text, reply_markup = _build_edit_menu(event_id, note="עודכן לאירוע חד-פעמי")
+            await query.edit_message_text(text, reply_markup=reply_markup)
         
         context.user_data.pop("edit_event_state", None)
     

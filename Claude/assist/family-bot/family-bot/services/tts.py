@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 services/tts.py
 Generates spoken Hebrew audio via OpenAI TTS (single events and daily summaries).

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 handlers/incoming.py
 Handles all incoming Telegram messages.

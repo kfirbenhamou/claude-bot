@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 db/queries.py
 All database access in one place.

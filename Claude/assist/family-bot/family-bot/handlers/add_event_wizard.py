@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 handlers/add_event_wizard.py
 

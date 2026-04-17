@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 handlers/agent_actions.py
 Turns free-text (Hebrew) requests into concrete DB actions.

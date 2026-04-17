@@ -1102,9 +1102,45 @@ async def _snooze_inline_callback(context: ContextTypes.DEFAULT_TYPE):
 # ── Event Management Callbacks (Edit, Remove, Add Reminder) ──────────────────
 
 def _build_edit_menu(event_id: int, note: str = "") -> tuple:
-    """Returns (text, InlineKeyboardMarkup) for the edit field selection menu."""
+    """Returns (text, InlineKeyboardMarkup) for the edit field selection menu.
+    Always shows the current event details so the user knows what they're editing.
+    """
     event = get_event_by_id(event_id)
-    title = event["title"] if event else str(event_id)
+    if not event:
+        return "אירוע לא נמצא.", InlineKeyboardMarkup([])
+
+    persona = get_persona_by_id(event["persona_id"])
+    persona_name = persona["name"] if persona else "?"
+
+    # Build current event snapshot
+    location_line = f"\n📍 {event['location']}" if event["location"] else ""
+    notes_line = f"\n📝 {event['notes']}" if event["notes"] else ""
+    if event["is_recurring"] and event["rrule"]:
+        time_line = f"\n🔁 {event['rrule']}"
+    elif event["event_datetime"]:
+        try:
+            dt = datetime.fromisoformat(event["event_datetime"])
+            time_line = f"\n⏰ {dt.strftime('%d/%m/%Y %H:%M')}"
+        except Exception:
+            time_line = ""
+    else:
+        time_line = ""
+    reminder_line = f"\n🔔 תזכורת {event['remind_before_minutes']} דקות לפני"
+
+    event_snapshot = (
+        f"👤 {persona_name}  •  🎯 {event['title']}"
+        f"{location_line}{notes_line}{time_line}{reminder_line}"
+    )
+
+    confirmation = f"✔️ {note}\n\n" if note else ""
+    text = (
+        f"{confirmation}"
+        f"─────────────────\n"
+        f"{event_snapshot}\n"
+        f"─────────────────\n"
+        f"✏️ בחרו שדה לעריכה:"
+    )
+
     keyboard = [
         [InlineKeyboardButton("📝 כותרת", callback_data=f"edit_field:title:{event_id}")],
         [InlineKeyboardButton("📍 מיקום", callback_data=f"edit_field:location:{event_id}")],
@@ -1113,8 +1149,6 @@ def _build_edit_menu(event_id: int, note: str = "") -> tuple:
         [InlineKeyboardButton("🔔 זמן תזכורת", callback_data=f"edit_field:reminder:{event_id}")],
         [InlineKeyboardButton("✅ סיום עריכה", callback_data="cancel_edit")],
     ]
-    prefix = f"✔️ {note}\n\n" if note else ""
-    text = f"{prefix}✏️ עריכת {title}\n\nבחרו שדה לעריכה:"
     return text, InlineKeyboardMarkup(keyboard)
 
 
@@ -1422,8 +1456,22 @@ async def handle_cancel_edit_callback(update: Update, context: ContextTypes.DEFA
     query = update.callback_query
     await query.answer()
     
-    context.user_data.pop("edit_event_state", None)
-    await query.edit_message_text("✅ העריכה הושלמה. השינויים נשמרו.")
+    edit_state = context.user_data.pop("edit_event_state", {})
+    event_id = edit_state.get("event_id")
+
+    if event_id:
+        event = get_event_by_id(event_id)
+        persona = get_persona_by_id(event["persona_id"]) if event else None
+        persona_name = persona["name"] if persona else "?"
+        if event:
+            summary = _build_event_message(dict(event), persona_name)
+            await query.edit_message_text(
+                f"✅ העריכה הושלמה!\n\n{summary}",
+                reply_markup=_build_event_keyboard(event_id),
+            )
+            return
+
+    await query.edit_message_text("✅ העריכה הושלמה.")
 
 
 async def handle_cancel_remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

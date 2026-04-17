@@ -795,6 +795,136 @@ async def _snooze_callback(context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Voice message handler ──────────────────────────────────────────────────────
+
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Listen to all voice messages in any chat.
+    Transcribe with Whisper, then parse for event intent.
+    If a create_event or update_event action is detected — execute it.
+    If action is 'none' (casual chat) — stay completely silent.
+    """
+    msg = update.message
+    if not msg or not msg.voice:
+        return
+
+    from services.transcription import transcribe_voice
+    from handlers.agent_actions import parse_agent_action, build_rrule, today_date_str
+    from db.queries import add_event, update_event, find_events, get_persona_by_id as _get_persona
+
+    # Download the voice file
+    try:
+        voice_file = await context.bot.get_file(msg.voice.file_id)
+        file_bytes = await voice_file.download_as_bytearray()
+    except Exception as exc:
+        logger.warning(f"[voice] failed to download voice file: {exc}")
+        return
+
+    # Transcribe
+    text = await transcribe_voice(bytes(file_bytes))
+    if not text:
+        return  # blank audio or transcription error — stay silent
+
+    logger.info(f"[voice] transcribed text: {text!r}")
+
+    # Parse intent
+    personas = get_all_personas()
+    persona_names = [p["name"] for p in personas]
+    action_data = parse_agent_action(text, persona_names)
+    action = action_data.get("action", "none")
+
+    if action == "none":
+        return  # casual chat — stay silent
+
+    # ── Create event ──────────────────────────────────────────────────────────
+    if action == "create_event":
+        event = action_data.get("event") or {}
+        names = event.get("persona_names") or (
+            [event["persona_name"]] if event.get("persona_name") else []
+        )
+        if not names:
+            await msg.reply_text("לא הצלחתי לזהות לעבור מי האירוע. נסה שוב.")
+            return
+
+        title = event.get("title", "אירוע")
+        location = event.get("location")
+        notes = event.get("notes")
+        remind = int(event.get("remind_before_minutes") or 60)
+        send_to = event.get("send_to") or "group"
+
+        is_recurring = bool(event.get("days_of_week"))
+        rrule = None
+        event_datetime = None
+        rrule_start = None
+
+        if is_recurring:
+            rrule = build_rrule(event["days_of_week"], event.get("start_time"))
+            rrule_start = today_date_str()
+        else:
+            event_datetime = event.get("event_datetime")
+
+        created_names = []
+        for name in names:
+            persona = next((p for p in personas if p["name"] == name), None)
+            if not persona:
+                continue
+            event_id = add_event(
+                title=title,
+                persona_id=persona["id"],
+                location=location,
+                notes=notes,
+                event_datetime=event_datetime,
+                rrule=rrule,
+                rrule_start=rrule_start,
+                remind_before_minutes=remind,
+                send_to=send_to,
+            )
+            _sync_event_to_gcal(event_id)
+            created_names.append(name)
+
+        if created_names:
+            names_str = ", ".join(created_names)
+            time_str = event_datetime or (f"חוזר: {rrule}" if rrule else "")
+            await msg.reply_text(
+                f"✅ נוסף אירוע:\n"
+                f"👤 {names_str}\n"
+                f"🎯 {title}\n"
+                f"⏰ {time_str}"
+            )
+        else:
+            await msg.reply_text("לא הצלחתי למצוא את שם האדם. נסה שוב.")
+
+    # ── Update event ──────────────────────────────────────────────────────────
+    elif action == "update_event":
+        match = action_data.get("match") or {}
+        updates = action_data.get("updates") or {}
+
+        event_id = match.get("event_id")
+        if not event_id:
+            persona_name = match.get("persona_name")
+            title_query = match.get("title_query")
+            persona_obj = next((p for p in personas if p["name"] == persona_name), None) if persona_name else None
+            results = find_events(
+                persona_id=persona_obj["id"] if persona_obj else None,
+                title_query=title_query,
+            )
+            if not results:
+                await msg.reply_text("לא מצאתי אירוע תואם. נסה לציין את שמו המדויק.")
+                return
+            event_id = results[0]["id"]
+
+        db_updates = {k: v for k, v in updates.items() if v is not None and k in {
+            "title", "location", "notes", "remind_before_minutes", "send_to",
+            "event_datetime", "rrule", "rrule_start", "rrule_end", "is_recurring"
+        }}
+        if db_updates:
+            update_event(event_id, **db_updates)
+            _sync_event_to_gcal(event_id)
+            await msg.reply_text(f"✅ האירוע עודכן.")
+        else:
+            await msg.reply_text("לא הצלחתי להבין מה לעדכן. נסה שוב.")
+
+
 async def handle_qa_exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle exiting Q&A conversation."""
     query = update.callback_query

@@ -23,6 +23,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from handlers.incoming import (
     handle_start,
     handle_message,
+    handle_voice_message,
     handle_help,
     handle_show,
     handle_show_callback,
@@ -112,6 +113,10 @@ def main():
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_message
+    ))
+    app.add_handler(MessageHandler(
+        filters.VOICE,
+        handle_voice_message
     ))
 
     scheduler = AsyncIOScheduler()

@@ -19,9 +19,11 @@ TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "onyx")
 # Style for single-event 🔊 button
 TTS_INSTRUCTIONS = os.getenv(
     "OPENAI_TTS_INSTRUCTIONS",
-    "Speak in Hebrew. Sound like a loud military drill sergeant or army commander shouting "
-    "orders: urgent, authoritative, clipped, with short pauses between phrases. "
-    "Do not whisper. Project like you are addressing troops in an open field.",
+    "Speak in Hebrew with a very thick, exaggerated Israeli sabra accent. "
+    "Sound like a classic Israeli — direct, loud, slightly impatient, rolling the Resh hard, "
+    "over-stressing syllables in a typical Tel Aviv style. "
+    "Be slightly over-dramatic and energetic, like an Israeli uncle who is always right and never subtle. "
+    "Short punchy pauses between facts, like you are reading out a market stall list at the shuk.",
 )
 # Calmer delivery for long morning readouts (8am daily summary)
 DAILY_SUMMARY_INSTRUCTIONS = os.getenv(

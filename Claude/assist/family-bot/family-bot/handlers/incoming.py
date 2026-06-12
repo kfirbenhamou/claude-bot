@@ -8,7 +8,7 @@ import logging
 import os
 from datetime import datetime, date, time, timedelta
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler
 from dotenv import load_dotenv
 from dateutil.rrule import rrulestr
@@ -213,15 +213,12 @@ def _build_event_message(event: dict, persona_name: str) -> str:
 
 
 def _build_event_keyboard(event_id: int) -> InlineKeyboardMarkup:
-    """Builds keyboard with edit, remove, add reminder, and TTS listen buttons."""
+    """Builds keyboard with edit, remove, and add reminder buttons."""
     keyboard = [
         [
             InlineKeyboardButton("✏️ עריכה", callback_data=f"evt_edit:{event_id}"),
             InlineKeyboardButton("🗑️ הסרה", callback_data=f"evt_remove:{event_id}"),
             InlineKeyboardButton("🔔 הוסף תזכורת", callback_data=f"evt_reminder:{event_id}"),
-        ],
-        [
-            InlineKeyboardButton("🔊 האזן", callback_data=f"evt_tts:{event_id}"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -1116,41 +1113,6 @@ async def handle_event_reminder_callback(update: Update, context: ContextTypes.D
     await query.edit_message_text(
         f"🔔 הוסף תזכורות ל\"{event['title']}\"\n\nבחרו כמה דקות לפני האירוע:",
         reply_markup=reply_markup
-    )
-
-
-async def handle_event_tts_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the 🔊 האזן button — sends a spoken audio summary of the event."""
-    query = update.callback_query
-    await query.answer("🔊 מייצר אודיו...")
-
-    try:
-        _, event_id_str = query.data.split(":")
-        event_id = int(event_id_str)
-    except Exception:
-        return
-
-    event = get_event_by_id(event_id)
-    if not event:
-        await query.message.reply_text("אירוע לא נמצא.")
-        return
-
-    persona = get_persona_by_id(event["persona_id"])
-    persona_name = persona["name"] if persona else "?"
-
-    from services.tts import generate_event_audio
-    import io
-
-    audio_bytes = generate_event_audio(dict(event), persona_name)
-    if not audio_bytes:
-        await query.message.reply_text("❌ לא הצלחתי לייצר אודיו כרגע. נסו שוב.")
-        return
-
-    # Reply under the event card, no caption — audio is the event briefing only.
-    await query.message._bot.send_voice(
-        chat_id=query.message.chat_id,
-        voice=InputFile(io.BytesIO(audio_bytes), filename="event.ogg"),
-        reply_to_message_id=query.message.message_id,
     )
 
 

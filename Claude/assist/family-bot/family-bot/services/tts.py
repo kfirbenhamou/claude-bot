@@ -1,13 +1,12 @@
 from __future__ import annotations
 """
 services/tts.py
-Generates spoken Hebrew audio via OpenAI TTS (single events and daily summaries).
+Generates spoken Hebrew audio for the daily schedule summary (optional OpenAI TTS).
 """
 
 import inspect
 import os
 import logging
-from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -17,23 +16,11 @@ logger = logging.getLogger(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "onyx")
-# Style for single-event 🔊 button
-TTS_INSTRUCTIONS = os.getenv(
-    "OPENAI_TTS_INSTRUCTIONS",
-    "Speak in Hebrew with a very thick, exaggerated Israeli sabra accent. "
-    "Sound like a classic Israeli — direct, loud, slightly impatient, rolling the Resh hard, "
-    "over-stressing syllables in a typical Tel Aviv style. "
-    "Be slightly over-dramatic and energetic, like an Israeli uncle who is always right and never subtle. "
-    "Short punchy pauses between facts, like you are reading out a market stall list at the shuk.",
-)
-# Calmer delivery for long morning readouts (8am daily summary)
 DAILY_SUMMARY_INSTRUCTIONS = os.getenv(
     "OPENAI_TTS_DAILY_SUMMARY_INSTRUCTIONS",
     "Speak in Hebrew. Morning briefing tone: clear, steady pace, friendly and efficient. "
     "Pause briefly between schedule items so each event is easy to follow.",
 )
-
-logger = logging.getLogger(__name__)
 
 
 def _create_speech(text: str, instructions: str | None) -> bytes | None:
@@ -87,45 +74,6 @@ def _create_speech(text: str, instructions: str | None) -> bytes | None:
                 return None
         logger.error(f"[tts] failed to generate audio: {e}")
         return None
-
-
-def _build_tts_text(event: dict, persona_name: str) -> str:
-    """Short Hebrew briefing — facts only, suitable for shouted delivery."""
-    chunks: list[str] = [persona_name, event["title"]]
-
-    if event.get("event_datetime"):
-        try:
-            dt = datetime.fromisoformat(event["event_datetime"])
-            chunks.append(f"{dt.strftime('%d/%m/%Y')} {dt.strftime('%H:%M')}")
-        except Exception:
-            pass
-    elif event.get("is_recurring") and event.get("rrule"):
-        chunks.append("חוזר")
-
-    if event.get("location"):
-        chunks.append(event["location"])
-
-    if event.get("notes"):
-        chunks.append(event["notes"])
-
-    remind = event.get("remind_before_minutes")
-    if remind:
-        if remind >= 60 and remind % 60 == 0:
-            chunks.append(f"תזכורת {remind // 60} שעות לפני")
-        else:
-            chunks.append(f"תזכורת {remind} דקות לפני")
-
-    return "! ".join(chunks) + "!"
-
-
-def generate_event_audio(event: dict, persona_name: str) -> bytes | None:
-    """
-    Generates TTS audio bytes for a single event (🔊 האזן button).
-    Returns raw opus bytes suitable for Telegram send_voice, or None on failure.
-    """
-    text = _build_tts_text(event, persona_name)
-    logger.info(f"[tts] event {event.get('id')} — {text}")
-    return _create_speech(text, TTS_INSTRUCTIONS if TTS_INSTRUCTIONS.strip() else None)
 
 
 def generate_daily_summary_audio(spoken_script: str) -> bytes | None:

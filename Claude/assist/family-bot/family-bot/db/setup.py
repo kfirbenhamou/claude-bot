@@ -130,7 +130,7 @@ def setup():
     print(f"✅ Database ready at: {DB_PATH}")
     print()
     print("Next steps:")
-    print("  1. Fill in .env with your bot token and OpenAI key")
+    print("  1. Fill in .env with your bot token and Anthropic key")
     print("  2. Add the bot to your family Telegram group")
     print("  3. Run: python main.py")
     print()

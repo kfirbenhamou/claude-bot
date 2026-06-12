@@ -5,14 +5,12 @@ Turns free-text (Hebrew) requests into concrete DB actions.
 """
 
 import json
-import os
 import logging
+import os
 from datetime import datetime
-from openai import OpenAI
-from dotenv import load_dotenv
 
-load_dotenv(override=True)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from services.llm import complete, DEFAULT_SONNET
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,7 +58,7 @@ SYSTEM_PROMPT = """
 
 def parse_agent_action(text: str, persona_names: list[str] | None = None) -> dict:
     """
-    Uses OpenAI to parse a free-text request into a structured action.
+    Uses Anthropic to parse a free-text request into a structured action.
     """
     try:
         personas_hint = ""
@@ -69,36 +67,18 @@ def parse_agent_action(text: str, persona_names: list[str] | None = None) -> dic
                 "\n\nשמות פרסונות אפשריים (אם מופיע 'עבור' / 'בשביל' חובה לבחור אחד או יותר מהרשימה; אם יש כמה, החזר מערך persona_names): "
                 + ", ".join(persona_names)
             )
-        model = os.getenv("OPENAI_AGENT_MODEL", os.getenv("OPENAI_QA_MODEL", "gpt-4o-mini"))
-        logger.info(f"[openai] agent model={model}")
-        try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT + personas_hint},
-                    {"role": "user", "content": text},
-                ],
-                temperature=0,
-                max_tokens=400,
-            )
-        except Exception as e:
-            # If model is not available (common 404), fall back to a widely available model.
-            msg = str(e)
-            if "404" in msg or "Not Found" in msg or "model" in msg.lower():
-                fallback = "gpt-4o"
-                logger.warning(f"[openai] agent model failed ({model}); retrying with {fallback}. error={msg}")
-                resp = client.chat.completions.create(
-                    model=fallback,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT + personas_hint},
-                        {"role": "user", "content": text},
-                    ],
-                    temperature=0,
-                    max_tokens=400,
-                )
-            else:
-                raise
-        raw = (resp.choices[0].message.content or "").strip()
+        model = os.getenv(
+            "ANTHROPIC_AGENT_MODEL",
+            os.getenv("ANTHROPIC_QA_MODEL", DEFAULT_SONNET),
+        )
+        raw = complete(
+            SYSTEM_PROMPT + personas_hint,
+            text,
+            model=model,
+            max_tokens=400,
+            temperature=0,
+            fallback_model=DEFAULT_SONNET,
+        )
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -125,4 +105,3 @@ def build_rrule(days_of_week: list[str], start_time: str | None) -> str | None:
 
 def today_date_str() -> str:
     return datetime.now().strftime("%Y-%m-%d")
-

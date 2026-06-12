@@ -1,20 +1,19 @@
 from __future__ import annotations
 """
 handlers/intent.py
-Uses OpenAI to understand free-text Hebrew replies.
+Uses Anthropic to understand free-text Hebrew replies.
 Returns a structured intent dict.
 """
 
-import os
 import json
 import logging
-from openai import OpenAI
-from dotenv import load_dotenv
+import os
 
-load_dotenv(override=True)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-INTENT_MODEL = os.getenv("OPENAI_INTENT_MODEL", "gpt-4o-mini")
+from services.llm import complete, DEFAULT_HAIKU
+
 logger = logging.getLogger(__name__)
+
+INTENT_MODEL = os.getenv("ANTHROPIC_INTENT_MODEL", DEFAULT_HAIKU)
 
 SYSTEM_PROMPT = """
 אתה עוזר משפחתי חכם. תפקידך לזהות את הכוונה של הודעה שנשלחה בעברית
@@ -64,36 +63,14 @@ def detect_intent(reply_text: str, event_context: dict = None) -> dict:
         )
 
     try:
-        logger.info(f"[openai] intent model={INTENT_MODEL}")
-        try:
-            response = client.chat.completions.create(
-                model=INTENT_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT + context_str},
-                    {"role": "user",   "content": reply_text}
-                ],
-                temperature=0,
-                max_tokens=200,
-            )
-        except Exception as e:
-            msg = str(e)
-            if "404" in msg or "Not Found" in msg or "model" in msg.lower():
-                fallback = "gpt-4o-mini"
-                logger.warning(f"[openai] intent model failed ({INTENT_MODEL}); retrying with {fallback}. error={msg}")
-                response = client.chat.completions.create(
-                    model=fallback,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT + context_str},
-                        {"role": "user",   "content": reply_text}
-                    ],
-                    temperature=0,
-                    max_tokens=200,
-                )
-            else:
-                raise
-        raw = response.choices[0].message.content.strip()
+        raw = complete(
+            SYSTEM_PROMPT + context_str,
+            reply_text,
+            model=INTENT_MODEL,
+            max_tokens=200,
+            temperature=0,
+        )
 
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -101,7 +78,6 @@ def detect_intent(reply_text: str, event_context: dict = None) -> dict:
 
         result = json.loads(raw)
 
-        # Ensure all expected keys exist
         result.setdefault("intent", "unknown")
         result.setdefault("snooze_minutes", None)
         result.setdefault("new_datetime", None)
@@ -109,7 +85,7 @@ def detect_intent(reply_text: str, event_context: dict = None) -> dict:
         return result
 
     except Exception as e:
-        print(f"[intent] OpenAI error: {e}")
+        print(f"[intent] Anthropic error: {e}")
         return {
             "intent": "unknown",
             "snooze_minutes": None,

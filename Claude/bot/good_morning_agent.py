@@ -9,8 +9,7 @@ import urllib3
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
-from openai import OpenAI
-import httpx
+from anthropic import Anthropic
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -19,9 +18,9 @@ load_dotenv()
 
 # ── Configuration ──────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
-MODEL = os.getenv("MODEL", "gpt-4o-mini")
+MODEL = os.getenv("ANTHROPIC_MORNING_MODEL", "claude-haiku-4-5-20251001")
 
 RECIPIENTS = [
     {"name": "משפחת בן חמו",  "chat_id": "-5028432647", "send_song": True},
@@ -127,9 +126,13 @@ def fetch_youtube_song() -> str | None:
 # ── Core logic ──────────────────────────────────────────────────
 
 def generate_morning_message(name: str) -> str:
-    """Ask GPT-4o mini to write a warm, personalised Hebrew good morning message."""
-    client = OpenAI(api_key=OPENAI_API_KEY, http_client=httpx.Client(verify=False))
-    today  = datetime.now().strftime("%A, %B %d")
+    """Ask Claude to write a warm, personalised Hebrew good morning message."""
+    if not ANTHROPIC_API_KEY:
+        log.error("ANTHROPIC_API_KEY not set")
+        return f"בוקר טוב {name}! ☀️"
+
+    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    today = datetime.now().strftime("%A, %B %d")
 
     prompt = (
         f"היום הוא {today}. כתוב הודעת בוקר טוב קצרה, חמה וידידותית בעברית "
@@ -140,13 +143,12 @@ def generate_morning_message(name: str) -> str:
         "אל תכלול קישורים או כתובות URL."
     )
 
-    response = client.chat.completions.create(
+    response = client.messages.create(
         model=MODEL,
         max_tokens=200,
         messages=[{"role": "user", "content": prompt}],
     )
-
-    raw = response.choices[0].message.content.strip()
+    raw = response.content[0].text.strip()
     return sanitize_message(raw)
 
 

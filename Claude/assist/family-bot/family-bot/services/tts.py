@@ -8,12 +8,13 @@ import inspect
 import os
 import logging
 from datetime import datetime
-from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+logger = logging.getLogger(__name__)
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "onyx")
 # Style for single-event 🔊 button
@@ -36,7 +37,15 @@ logger = logging.getLogger(__name__)
 
 
 def _create_speech(text: str, instructions: str | None) -> bytes | None:
-    """Core TTS call. instructions=None or empty skips the instructions parameter."""
+    """Core TTS call. Requires OPENAI_API_KEY; returns None when disabled."""
+    if not OPENAI_API_KEY:
+        logger.info("[tts] disabled — OPENAI_API_KEY not set")
+        return None
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
     text = text.strip()
     if not text:
         return None
